@@ -221,8 +221,9 @@ export default class NoteSnapshotsPlugin extends Plugin {
 	/**
 	 * Saves a snapshot of `file`. Every user-invoked save — the sidebar button, the
 	 * command, the header menu — records one even when the content is identical to an
-	 * existing snapshot, so an explicit request is never silently dropped. Only
-	 * restore's automatic backup (rule R4) keeps the no-op.
+	 * existing snapshot, so an explicit request is never silently dropped.
+	 *
+	 * Only restore's automatic backup (rule R4) keeps the no-op.
 	 */
 	async snapshotFile(file: TFile | null, name?: string, message?: string): Promise<void> {
 		if (!this.requireFile(file)) return;
@@ -275,36 +276,52 @@ export default class NoteSnapshotsPlugin extends Plugin {
 	/**
 	 * Settles how the restore should treat changed embedded attachments, prompting when
 	 * something is at stake. Returns null if the user backs out.
+	 *
+	 * Two independent checks feed this, and the attachment one always runs first. So a
+	 * restore can still prompt here even when `plan.workingState` reports "clean" —
+	 * that's not a contradiction, `plan.workingState` only ever speaks to the note's
+	 * text (see its own doc comment on `RestorePlan`).
 	 */
 	private async decideRestore(file: TFile, row: SnapshotRow, plan: RestorePlan): Promise<RestoreDecision | null> {
 		const policy = this.settings.confirmRestore;
-		// "Never" means never interrupt: restore the text, leave present attachments alone.
+
+		// Case 1: policy is "never" — never interrupt, restore the text and leave
+		// present attachments alone.
 		if (policy === 'never') return { kind: 'restore', mode: 'skip', dropUnsavedWork: false };
 
+		// Case 2: a changed attachment is at stake — its own confirm & restore path,
+		// regardless of what plan.workingState says: it's checked against the *target*
+		// snapshot's own recorded attachments, not against history in general, so it
+		// fires on the ordinary case of restoring to a version whose attachments simply
+		// differ from the current ones — not only when something is actually unsaved.
 		if (plan.attachmentsToOverwriteAndCaptured.length > 0 || plan.attachmentsToOverwriteAndUncaptured.length > 0) {
 			return this.promptAttachmentRestore(row, plan);
 		}
 
-		if (shouldConfirmRestore(policy, plan.working)) {
-			// Unsaved work is at stake: let the user keep it (snapshot first) or drop it,
-			// defaulting to keeping it. Every other state is a plain yes/no confirm.
-			if (plan.working?.kind === 'unsaved') {
-				return this.promptRestoreOverUnsaved(row);
-			}
-			const confirmed = await this.confirm({
-				title: 'Restore snapshot',
-				message: restoreConfirmationMessage(file.basename, row, plan.working),
-				cta: 'Restore',
-			});
-			return confirmed ? { kind: 'restore', mode: 'skip', dropUnsavedWork: false } : null;
+		// Case 3: nothing is at stake under this policy — restore straight away.
+		if (!shouldConfirmRestore(policy, plan.workingState)) {
+			return { kind: 'restore', mode: 'skip', dropUnsavedWork: false };
 		}
-		return { kind: 'restore', mode: 'skip', dropUnsavedWork: false };
+
+		// Case 4: unsaved work is at stake — let the user keep it (snapshot first) or
+		// drop it, defaulting to keeping it.
+		if (plan.workingState?.kind === 'unsaved') {
+			return this.promptRestoreOverUnsaved(row);
+		}
+
+		// Case 5: every other state — a plain yes/no confirm.
+		const confirmed = await this.confirm({
+			title: 'Restore snapshot',
+			message: restoreConfirmationMessage(file.basename, row, plan.workingState),
+			cta: 'Restore',
+		});
+		return confirmed ? { kind: 'restore', mode: 'skip', dropUnsavedWork: false } : null;
 	}
 
 	/** The multi-way prompt shown when a restore would overwrite a changed attachment. */
 	private async promptAttachmentRestore(row: SnapshotRow, plan: RestorePlan): Promise<RestoreDecision | null> {
 		const target = formatSnapshotLabel(row.n, row.name);
-		const bodyUnsaved = plan.working?.kind === 'unsaved';
+		const bodyUnsaved = plan.workingState?.kind === 'unsaved';
 		const atRisk = plan.attachmentsToOverwriteAndUncaptured.length > 0 || bodyUnsaved;
 		const changedAttachments = plan.attachmentChanges.filter((change) => change.disposition === 'changed');
 		const body: string[] = [];

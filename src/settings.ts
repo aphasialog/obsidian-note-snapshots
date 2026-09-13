@@ -9,8 +9,17 @@ import type { WorkingState } from '@/types';
  *                     than the restore just moving `activeSnapshotId`.
  *  - `never`        — restore immediately.
  *
- * An attachment changed in place counts as unsaved work too, but is found on a separate
- * path (see `decideRestore`) and always confirmed unless the policy is `never`.
+ * `when-unsaved` is judged by note text alone (see `findSnapshotIdByContent`) — an
+ * attachment changed in place doesn't move it, so the working-state badge can read
+ * "clean" while an attachment has actually drifted.
+ *
+ * That's safe: attachment changes are found separately and lazily, only once a
+ * restore is actually attempted, by checking the *target* snapshot's own recorded
+ * attachments against the vault (`planRestore`, via `planAttachmentChanges`).
+ *
+ * That check is gated by this same policy, not a separate setting — `decideRestore`
+ * gates it on the very same `never` above: `always` and `when-unsaved` alike always
+ * confirm an attachment overwrite, and only `never` skips it too.
  */
 export type RestoreConfirmPolicy = 'always' | 'when-unsaved' | 'never';
 

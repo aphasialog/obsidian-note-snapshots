@@ -49,8 +49,15 @@ export interface RestoreOutcome {
  */
 export interface RestorePlan {
 	target: SnapshotRow;
-	/** The working file's state, or null if it could not be read. */
-	working: WorkingState | null;
+	/**
+	 * The working file's state, or null if it could not be read. Text-only (see
+	 * `findSnapshotIdByContent`) — it says nothing about attachments, and a caller
+	 * deciding whether to confirm should not treat "clean" here as "nothing to ask
+	 * about". `attachmentsToOverwriteAndCaptured`/`Uncaptured` below is the independent
+	 * signal for that; the UI checks those first and consults `workingState` only once
+	 * they're both empty (see `decideRestore`).
+	 */
+	workingState: WorkingState | null;
 	/** What `restoreSnapshot`/`backupAndRestoreSnapshot` execute against directly. */
 	attachmentChanges: AttachmentChange[];
 	/**
@@ -198,9 +205,9 @@ export class SnapshotService {
 		const target = manifest?.snapshots[snapshotId];
 		if (!manifest || !target) throw new Error('That snapshot no longer exists.');
 
-		let working: WorkingState | null = null;
+		let workingState: WorkingState | null = null;
 		try {
-			working = await this.getWorkingState(file);
+			workingState = await this.getWorkingState(file);
 		} catch (error) {
 			console.error('Note Snapshots: could not read the working state before restore.', error);
 		}
@@ -235,7 +242,7 @@ export class SnapshotService {
 
 		return {
 			target: this.toRow(manifest, snapshotId),
-			working,
+			workingState,
 			attachmentChanges,
 			capturedAttachmentHashes,
 			attachmentsToRecreate,
@@ -330,12 +337,12 @@ export class SnapshotService {
 			const current = await this.readContent(file);
 			let backupId: string | null = null;
 
-			// Trusts `plan.working` (rule R4's dedup check) rather than re-deriving it —
-			// see RestorePlan's own doc comment for why. A `null` plan.working (its own
+			// Trusts `plan.workingState` (rule R4's dedup check) rather than re-deriving it —
+			// see RestorePlan's own doc comment for why. A `null` plan.workingState (its own
 			// computation failed at plan time) is treated the same as `unsaved`: guessing
 			// wrong that way costs one harmless extra backup, whereas guessing "clean"
 			// could silently discard the only copy of genuinely unsaved work.
-			const mightBeUnsaved = plan.working === null || plan.working.kind === 'unsaved';
+			const mightBeUnsaved = plan.workingState === null || plan.workingState.kind === 'unsaved';
 			if (decision.forceBackup || (mightBeUnsaved && !decision.dropUnsavedWork)) {
 				const hash = await hashNoteContent(current);
 				backupId = await this.createNewSnapshot(manifest, current, hash, file.path, UNSAVED_LABEL);
@@ -456,10 +463,19 @@ export class SnapshotService {
 	/**
 	 * Finds the snapshot holding exactly this content.
 	 *
-	 * The hash narrows the candidates; equality is always confirmed by comparing the
-	 * stored bytes, so a weak fallback hash can never cause a wrong match. Returns the
-	 * matching snapshot's id, preferring `activeSnapshotId` when several snapshots hold identical
-	 * content. Used by getWorkingState, saveSnapshot, and restoreSnapshot.
+	 * Direct text comparison only — the hash narrows the candidates, equality is always
+	 * confirmed by comparing the stored bytes, so a weak fallback hash can never cause a
+	 * wrong match. It never looks at attachments, so the `clean`/`unsaved` verdict this
+	 * produces (via getWorkingState) can say "clean" while an embedded attachment has
+	 * actually changed in place. That's fine to leave as is: nothing downstream trusts
+	 * this verdict for attachment safety. A restore checks attachments separately and
+	 * lazily — only when actually attempted, straight against the *target* snapshot's
+	 * own recorded attachments (see `planAttachmentChanges`) — so it stays correct
+	 * regardless of what this function said.
+	 *
+	 * Returns the matching snapshot's id, preferring `activeSnapshotId` when several
+	 * snapshots hold identical content. Used by getWorkingState, saveSnapshot, and
+	 * restoreSnapshot.
 	 */
 	private async findSnapshotIdByContent(
 		manifest: NoteManifest,
@@ -567,8 +583,9 @@ function emptyManifest(noteId: string, latestPath: string): NoteManifest {
 /**
  * Positions every snapshot by age, oldest = 1, so the newest snapshot carries the
  * highest number. Timestamps are strictly increasing (see monotonicTimestamp), so
- * this order matches creation order. Purely for display — deleting a snapshot shifts
- * the rest, which is the point.
+ * this order matches creation order.
+ *
+ * Purely for display — deleting a snapshot shifts the rest, which is the point.
  */
 function numberByAge(snapshots: Record<string, SnapshotMetadata>): Map<string, number> {
 	const numbers = new Map<string, number>();

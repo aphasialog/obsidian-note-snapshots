@@ -362,9 +362,10 @@ export async function restoreAttachments(
  * Writes attachment bytes, preferring the Vault API when Obsidian already tracks a
  * file at `path`. `Vault.modifyBinary` bumps the file's mtime and fires a `modify`
  * event, which invalidates the cached resource URL so an open note re-renders the
- * embed instead of showing the pre-restore image until it is reopened. The adapter
- * fallback covers a path Obsidian has no `TFile` for yet — a just-recreated file, or
- * the test harness.
+ * embed instead of showing the pre-restore image until it is reopened.
+ *
+ * The adapter fallback covers a path Obsidian has no `TFile` for yet — a
+ * just-recreated file, or the test harness.
  */
 async function writeAttachmentBytes(app: App, path: string, data: ArrayBuffer): Promise<void> {
 	const existing = app.vault.getAbstractFileByPath(normalizePath(path));

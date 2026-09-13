@@ -105,9 +105,10 @@ export class IdentityService {
 	/**
 	 * True when `selfPath` should be treated as a fork: a different live note already
 	 * sitting at `path` independently claims the same `noteId`, so two live files are
-	 * claiming one history. `selfPath` is the one not sitting at the recorded path, so
-	 * it is the newcomer — it forks onto an empty history and the original keeps
-	 * everything.
+	 * claiming one history.
+	 *
+	 * `selfPath` is the one not sitting at the recorded path, so it is the newcomer —
+	 * it forks onto an empty history and the original keeps everything.
 	 */
 	private async shouldForkFile(path: string, noteId: string, selfPath: string): Promise<boolean> {
 		if (path === selfPath) return false;

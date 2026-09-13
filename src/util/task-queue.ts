@@ -1,14 +1,14 @@
 /**
  * Serialises async work per key.
  *
- * Two keys are in use in this plugin:
+ * Two types of keys are in use in this plugin:
  *
- *  - `noteId` — every read-modify-write of a note's manifest.json goes through its
- *    queue, so two concurrent saves (say, an autosave and a manual restore) can't
- *    race and clobber each other. A rename or move can never split that queue,
- *    since the key is identity, not path.
  *  - `CENTRAL_QUEUE_KEY` (see store.ts) — serialises writes to the single shared
- *    central.json the same way.
+ *    central.json.
+ *  - `noteId` — each note has its own key, so its own queue: every read-modify-write
+ *    of that note's manifest.json goes through it, so two concurrent saves (say, an
+ *    autosave and a manual restore) can't race and clobber each other. A rename or
+ *    move can never split that queue, since the key is identity, not path.
  *
  * Failures do not poison the chain — the next task runs regardless.
  */
