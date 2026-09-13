@@ -1,0 +1,201 @@
+import type { SnapshotRow, WorkingState } from '@/types';
+import type { AttachmentConflictMode, RestoreOutcome } from '@/core/snapshots';
+import type { NoteSnapshotsSettings } from '@/settings';
+
+// --- Snapshot names ---
+
+/** "V3" or "V3 · Before refactor". */
+export function formatSnapshotLabel(n: number, name?: string): string {
+	return name ? `V${n} · ${name}` : `V${n}`;
+}
+
+/**
+ * A short, quoted list of names: `"a.png"`, `"a.png" and "b.png"`,
+ * `"a.png", "b.png" and "c.png"`, then `4 attachments` once it would run long.
+ */
+export function formatAttachmentNames(names: string[], max = 3): string {
+	if (names.length === 0) return 'no attachments';
+	if (names.length > max) return `${names.length} attachments`;
+	const quoted = names.map((name) => `"${name}"`);
+	if (quoted.length === 1) return quoted[0]!;
+	return `${quoted.slice(0, -1).join(', ')} and ${quoted[quoted.length - 1]!}`;
+}
+
+// --- Restore messaging ---
+
+/**
+ * What the restore confirmation says, tailored to what the restore will actually do.
+ *
+ * A `clean` working file is the only case worth distinguishing: its content is
+ * already saved, so restoring risks nothing. Every other case — unsaved work, or a
+ * state we could not determine — gets the same message, since both are resolved the
+ * same way: whatever is not already snapshotted is captured first.
+ */
+export function restoreConfirmationMessage(basename: string, row: SnapshotRow, working: WorkingState | null): string {
+	const target = formatSnapshotLabel(row.n, row.name);
+
+	if (working?.kind === 'clean') {
+		if (working.snapshotId === row.snapshotId) {
+			return `"${basename}" already matches ${target}, so restoring changes nothing.`;
+		}
+		return `Replace the contents of "${basename}" with ${target}? The current content is already saved as V${working.n}.`;
+	}
+
+	return `Replace the contents of "${basename}" with ${target}? Any content that is not already snapshotted can be captured first.`;
+}
+
+/** The single notice shown after a restore, covering the body and every attachment it touched. */
+export function describeRestoreOutcome(outcome: RestoreOutcome, mode: AttachmentConflictMode): string {
+	const n = outcome.restored.n;
+	const parts: string[] = [];
+
+	if (outcome.backup) {
+		parts.push(`Saved the previous state as V${outcome.backup.n}, then restored V${n}.`);
+	} else if (mode === 'skip' && outcome.attachmentsSkipped.length > 0) {
+		parts.push(`Restored V${n}'s text.`);
+	} else {
+		parts.push(`Restored V${n}.`);
+	}
+
+	if (outcome.attachmentsRecreated > 0) {
+		const count = outcome.attachmentsRecreated;
+		parts.push(`Recreated ${count} missing attachment${count === 1 ? '' : 's'}.`);
+	}
+
+	if (outcome.attachmentsOverwrittenAndRecoverable.length > 0) {
+		parts.push(describeReplaced(outcome.attachmentsOverwrittenAndRecoverable));
+	}
+
+	if (outcome.attachmentsOverwrittenAndUnrecoverable.length > 0) {
+		parts.push(describeDiscarded(outcome.attachmentsOverwrittenAndUnrecoverable));
+	}
+
+	if (outcome.attachmentsSkipped.length > 0) {
+		const plural = outcome.attachmentsSkipped.length !== 1;
+		parts.push(`${formatAttachmentNames(outcome.attachmentsSkipped)} still show${plural ? '' : 's'} a later version.`);
+	}
+
+	return parts.join(' ');
+}
+
+/** "Replaced … — it is still saved in an earlier snapshot." */
+function describeReplaced(replaced: string[]): string {
+	const pronoun = replaced.length === 1 ? 'it is' : 'they are';
+	return `Replaced ${formatAttachmentNames(replaced)} — ${pronoun} still saved in an earlier snapshot.`;
+}
+
+/** "Discarded the current copy of … — it is gone for good." */
+function describeDiscarded(discarded: string[]): string {
+	const pronoun = discarded.length === 1 ? 'it is' : 'they are';
+	return `Discarded the current copy of ${formatAttachmentNames(discarded)} — ${pronoun} gone for good.`;
+}
+
+// --- Byte and time formatting ---
+
+export function formatBytes(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+const UNITS: Array<[label: string, seconds: number]> = [
+	['year', 31_536_000],
+	['month', 2_592_000],
+	['week', 604_800],
+	['day', 86_400],
+	['hour', 3_600],
+	['minute', 60],
+];
+
+/** "just now", "5 minutes ago", "3 days ago". */
+export function formatRelative(iso: string): string {
+	const then = Date.parse(iso);
+	if (!Number.isFinite(then)) return 'unknown time';
+	const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
+	if (seconds < 45) return 'just now';
+	for (const [label, size] of UNITS) {
+		if (seconds >= size) {
+			const count = Math.floor(seconds / size);
+			return `${count} ${label}${count === 1 ? '' : 's'} ago`;
+		}
+	}
+	return 'just now';
+}
+
+export function formatAbsolute(iso: string): string {
+	const then = new Date(iso);
+	return Number.isNaN(then.getTime()) ? iso : then.toLocaleString();
+}
+
+// --- Snapshot name templates ---
+
+const TOKEN = /\{\{\s*(\w+)\s*\}\}/g;
+
+/** What a snapshot name template can interpolate. */
+export interface NameContext {
+	/** The note's basename, without the extension. */
+	note: string;
+	/** Defaults to now; injectable so the checks are deterministic. */
+	now?: Date;
+}
+
+/**
+ * Fills `{{token}}` placeholders in a snapshot name template.
+ *
+ * Unknown tokens are left verbatim rather than blanked, so a typo is visible in the
+ * prompt instead of silently producing a shorter name.
+ */
+export function renderNameTemplate(template: string, context: NameContext): string {
+	const now = context.now ?? new Date();
+	return template
+		.replace(TOKEN, (match, token: string) => {
+			switch (token.toLowerCase()) {
+				case 'date':
+					return dateToken(now);
+				case 'time':
+					return timeToken(now);
+				case 'datetime':
+					return `${dateToken(now)} ${timeToken(now)}`;
+				case 'timestamp':
+					return String(now.getTime());
+				case 'iso':
+					return now.toISOString();
+				case 'note':
+					return context.note;
+				default:
+					return match;
+			}
+		})
+		.trim();
+}
+
+/** The name the snapshot prompt should open with, or '' for an empty box. */
+export function suggestedSnapshotName(settings: NoteSnapshotsSettings, context: NameContext): string {
+	return renderNameTemplate(suggestionTemplate(settings), context);
+}
+
+/** The template behind a suggestion preset. `custom` supplies its own. */
+function suggestionTemplate(settings: NoteSnapshotsSettings): string {
+	switch (settings.snapshotNameSuggestion) {
+		case 'none':
+			return '';
+		case 'date':
+			return '{{date}}';
+		case 'datetime':
+			return '{{datetime}}';
+		case 'custom':
+			return settings.snapshotNameTemplate;
+	}
+}
+
+function dateToken(date: Date): string {
+	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function timeToken(date: Date): string {
+	return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function pad(value: number): string {
+	return String(value).padStart(2, '0');
+}

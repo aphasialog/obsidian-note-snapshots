@@ -1,0 +1,532 @@
+import { MarkdownView, Notice, Plugin, TFile, type WorkspaceLeaf } from 'obsidian';
+import type { SnapshotRow, WorkingState } from '@/types';
+import { DEFAULT_SETTINGS, normaliseSettings, shouldConfirmRestore, type NoteSnapshotsSettings } from '@/settings';
+import { Paths } from '@/core/paths';
+import { Store } from '@/core/store';
+import { IdentityService } from '@/core/identity';
+import { SnapshotService, type AttachmentConflictMode, type RestorePlan } from '@/core/snapshots';
+import { TaskQueue } from '@/util/task-queue';
+import { HistoryView, VIEW_TYPE_HISTORY } from '@/ui/history-view';
+import { NoteSnapshotsSettingTab } from '@/ui/settings-tab';
+import { ChoiceModal, ConfirmModal, SnapshotModal } from '@/ui/modals';
+import {
+	describeRestoreOutcome,
+	formatAttachmentNames,
+	restoreConfirmationMessage,
+	suggestedSnapshotName,
+	formatSnapshotLabel,
+} from '@/ui/format';
+
+/** What the user chose in response to a restore prompt: a plain restore, or one with a forced backup first. */
+type RestoreDecision =
+	| { kind: 'restore'; mode: AttachmentConflictMode; dropUnsavedWork: boolean }
+	| { kind: 'backupAndRestore' };
+
+export default class NoteSnapshotsPlugin extends Plugin {
+	settings: NoteSnapshotsSettings = DEFAULT_SETTINGS;
+
+	// Assigned in onload, before anything can reach them.
+	paths!: Paths;
+	store!: Store;
+	identity!: IdentityService;
+	snapshots!: SnapshotService;
+
+	private queue!: TaskQueue;
+
+	// --- Lifecycle ---
+
+	override async onload(): Promise<void> {
+		this.settings = normaliseSettings(await this.loadData());
+
+		this.queue = new TaskQueue();
+		this.paths = new Paths(() => this.settings.storeFolder);
+		this.store = new Store(this.app, this.paths, this.queue);
+		this.identity = new IdentityService(this.app, this.store, this.queue, (file) => {
+			new Notice(`"${file.basename}" looks like a copy, so it starts a fresh snapshot history.`, 8000);
+		});
+		this.snapshots = new SnapshotService(
+			this.app,
+			this.store,
+			this.identity,
+			this.queue,
+			(file) => this.readContent(file),
+		);
+
+		this.registerView(VIEW_TYPE_HISTORY, (leaf: WorkspaceLeaf) => new HistoryView(leaf, this));
+		this.addSettingTab(new NoteSnapshotsSettingTab(this.app, this));
+
+		this.addRibbonIcon('history', 'Snapshot history', () => void this.revealView());
+		this.registerCommands();
+		this.registerVaultEvents();
+		// The history of a deleted note is only ever removed when the user asks for it,
+		// via the "Clean up history of deleted notes" command or the settings button —
+		// nothing is purged automatically.
+	}
+
+	override onunload(): void {
+		// Views are torn down by Obsidian; nothing else holds resources.
+	}
+
+	private registerCommands(): void {
+		this.addCommand({
+			id: 'snapshot-named',
+			name: 'Save a named snapshot of the current note',
+			checkCallback: (checking) => {
+				const file = this.getTrackableFile();
+				if (checking) return file !== null;
+				void this.snapshotWithPrompt(file);
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: 'snapshot-quick',
+			name: 'Save a snapshot of the current note',
+			checkCallback: (checking) => {
+				const file = this.getTrackableFile();
+				if (checking) return file !== null;
+				void this.snapshotFile(file);
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: 'open-history',
+			name: 'Open snapshot history',
+			callback: () => void this.revealView(),
+		});
+
+		this.addCommand({
+			id: 'purge-orphans',
+			name: 'Clean up history of deleted notes',
+			callback: () => {
+				void this.purgeOrphans().then((removed) => {
+					new Notice(
+						removed === 0
+							? 'Nothing to clean up.'
+							: `Removed history for ${removed} deleted note${removed === 1 ? '' : 's'}.`,
+					);
+				});
+			},
+		});
+	}
+
+	private registerVaultEvents(): void {
+		this.registerEvent(
+			this.app.vault.on('rename', (file, oldPath) => {
+				if (!(file instanceof TFile) || this.paths.isInternal(file.path)) return;
+				void this.identity
+					.handleRename(file, oldPath)
+					.catch((error: unknown) => console.error('Note Snapshots: rename failed.', error))
+					.finally(() => this.refreshViews());
+			}),
+		);
+
+		this.registerEvent(
+			this.app.vault.on('delete', (file) => {
+				if (!(file instanceof TFile) || this.paths.isInternal(file.path)) return;
+				void this.identity
+					.handleDelete(file.path)
+					.catch((error: unknown) => console.error('Note Snapshots: delete failed.', error));
+			}),
+		);
+	}
+
+	/** The active file, if it is something this plugin can track. */
+	private getTrackableFile(): TFile | null {
+		const file = this.app.workspace.getActiveFile();
+		if (!file || file.extension !== 'md') return null;
+		return this.paths.isInternal(file.path) ? null : file;
+	}
+
+	// --- Settings ---
+
+	async updateSettings(patch: Partial<NoteSnapshotsSettings>): Promise<void> {
+		const pathChanged = patch.storeFolder !== undefined && patch.storeFolder.trim() !== this.settings.storeFolder;
+		this.settings = normaliseSettings({ ...this.settings, ...patch });
+		await this.saveData(this.settings);
+		if (pathChanged) this.store.invalidate();
+		this.refreshViews();
+	}
+
+	// --- Content access ---
+
+	/**
+	 * Reads what the user currently sees.
+	 *
+	 * `vault.read` returns the file on disk, and Obsidian flushes the editor buffer a
+	 * second or two after the last keystroke. Snapshotting straight after typing would
+	 * otherwise silently miss the most recent edits, so an open editor wins.
+	 */
+	async readContent(file: TFile): Promise<string> {
+		for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
+			const view = leaf.view;
+			if (view instanceof MarkdownView && view.file?.path === file.path) {
+				return view.editor.getValue();
+			}
+		}
+		return this.app.vault.read(file);
+	}
+
+	// --- History view ---
+
+	async revealView(): Promise<void> {
+		const [existing] = this.app.workspace.getLeavesOfType(VIEW_TYPE_HISTORY);
+		if (existing) {
+			await this.app.workspace.revealLeaf(existing);
+			return;
+		}
+		const leaf = this.app.workspace.getRightLeaf(false);
+		if (!leaf) return;
+		await leaf.setViewState({ type: VIEW_TYPE_HISTORY, active: true });
+		await this.app.workspace.revealLeaf(leaf);
+	}
+
+	refreshViews(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_HISTORY)) {
+			if (leaf.view instanceof HistoryView) void leaf.view.refresh();
+		}
+	}
+
+	// --- Saving a snapshot ---
+
+	async snapshotWithPrompt(file: TFile | null): Promise<void> {
+		if (!this.requireFile(file)) return;
+		// Only the name is prefilled — the user still confirms explicitly, so a
+		// snapshot is never created without their say-so.
+		const suggestion = suggestedSnapshotName(this.settings, { note: file.basename });
+		// If the note already matches a stored snapshot, say so — the user can still
+		// save an identical snapshot from here, they just do it knowingly.
+		const working = await this.getWorkingStateOrNull(file);
+		const duplicateOf = working?.kind === 'clean' ? formatSnapshotLabel(working.n, working.name) : null;
+		const entered = await new Promise<{ name: string; message: string } | null>((resolve) =>
+			new SnapshotModal(
+				this.app,
+				{
+					title: 'Save snapshot',
+					cta: 'Save',
+					namePlaceholder: 'Optional name, e.g. before rewrite',
+					...(suggestion ? { initialName: suggestion } : {}),
+					...(duplicateOf
+						? { notice: `This note is identical to ${duplicateOf}. Saving adds another copy of it.` }
+						: {}),
+				},
+				resolve,
+			).open(),
+		);
+		if (entered === null) return;
+		await this.snapshotFile(file, entered.name, entered.message);
+	}
+
+	/**
+	 * Saves a snapshot of `file`. Every user-invoked save — the sidebar button, the
+	 * command, the header menu — records one even when the content is identical to an
+	 * existing snapshot, so an explicit request is never silently dropped. Only
+	 * restore's automatic backup (rule R4) keeps the no-op.
+	 */
+	async snapshotFile(file: TFile | null, name?: string, message?: string): Promise<void> {
+		if (!this.requireFile(file)) return;
+		try {
+			const { row } = await this.snapshots.saveSnapshot(file, name, message, true);
+			new Notice(`Saved ${formatSnapshotLabel(row.n, row.name)}.`);
+			this.refreshViews();
+		} catch (error) {
+			this.reportError('Could not save a snapshot', error);
+		}
+	}
+
+	// --- Restoring a snapshot ---
+
+	async restoreSnapshot(file: TFile | null, row: SnapshotRow): Promise<void> {
+		if (!this.requireFile(file)) return;
+
+		let plan: RestorePlan;
+		try {
+			plan = await this.snapshots.planRestore(file, row.snapshotId);
+		} catch (error) {
+			this.reportError('Could not restore that snapshot', error);
+			return;
+		}
+
+		const decision = await this.decideRestore(file, row, plan);
+		if (decision === null) return;
+
+		try {
+			const outcome =
+				decision.kind === 'backupAndRestore'
+					? await this.snapshots.backupAndRestoreSnapshot(file, plan)
+					: await this.snapshots.restoreSnapshot(file, plan, {
+							attachments: decision.mode,
+							dropUnsavedWork: decision.dropUnsavedWork,
+						});
+			// backupAndRestoreSnapshot always yields outcome.backup, which describeRestoreOutcome
+			// checks before ever looking at mode — so the exact value here does not matter.
+			const noticeMode = decision.kind === 'backupAndRestore' ? 'replace' : decision.mode;
+			new Notice(describeRestoreOutcome(outcome, noticeMode));
+			if (outcome.attachmentsOverwrittenAndRecoverable.length > 0 || outcome.attachmentsOverwrittenAndUnrecoverable.length > 0 || outcome.attachmentsRecreated > 0) {
+				this.reloadEmbeds(file);
+			}
+			this.refreshViews();
+		} catch (error) {
+			this.reportError('Could not restore that snapshot', error);
+		}
+	}
+
+	/**
+	 * Settles how the restore should treat changed embedded attachments, prompting when
+	 * something is at stake. Returns null if the user backs out.
+	 */
+	private async decideRestore(file: TFile, row: SnapshotRow, plan: RestorePlan): Promise<RestoreDecision | null> {
+		const policy = this.settings.confirmRestore;
+		// "Never" means never interrupt: restore the text, leave present attachments alone.
+		if (policy === 'never') return { kind: 'restore', mode: 'skip', dropUnsavedWork: false };
+
+		if (plan.attachmentsToOverwriteAndCaptured.length > 0 || plan.attachmentsToOverwriteAndUncaptured.length > 0) {
+			return this.promptAttachmentRestore(row, plan);
+		}
+
+		if (shouldConfirmRestore(policy, plan.working)) {
+			// Unsaved work is at stake: let the user keep it (snapshot first) or drop it,
+			// defaulting to keeping it. Every other state is a plain yes/no confirm.
+			if (plan.working?.kind === 'unsaved') {
+				return this.promptRestoreOverUnsaved(row);
+			}
+			const confirmed = await this.confirm({
+				title: 'Restore snapshot',
+				message: restoreConfirmationMessage(file.basename, row, plan.working),
+				cta: 'Restore',
+			});
+			return confirmed ? { kind: 'restore', mode: 'skip', dropUnsavedWork: false } : null;
+		}
+		return { kind: 'restore', mode: 'skip', dropUnsavedWork: false };
+	}
+
+	/** The multi-way prompt shown when a restore would overwrite a changed attachment. */
+	private async promptAttachmentRestore(row: SnapshotRow, plan: RestorePlan): Promise<RestoreDecision | null> {
+		const target = formatSnapshotLabel(row.n, row.name);
+		const bodyUnsaved = plan.working?.kind === 'unsaved';
+		const atRisk = plan.attachmentsToOverwriteAndUncaptured.length > 0 || bodyUnsaved;
+		const changedAttachments = plan.attachmentChanges.filter((change) => change.disposition === 'changed');
+		const body: string[] = [];
+
+		// 1. Conclusion: is the current content already safe, or would something be lost?
+		body.push(atRisk ? 'The current content has unsaved work.' : 'The current content is already saved in another snapshot.');
+
+		// 2. Details: exactly what restoring would overwrite, plus each attachment's path
+		// so it can be checked before deciding.
+		const overwritten: string[] = [];
+		if (bodyUnsaved) overwritten.push('the note');
+		overwritten.push(changedAttachments.length === 1 ? 'the following attachment:' : 'the following attachments:');
+		body.push(`This restore will overwrite ${overwritten.join(' and ')}`);
+		const list = changedAttachments.map((change) => change.presentPath!);
+
+		// Mention attachments too large to hash — same size as before, so assumed
+		// unchanged without reading their content.
+		if (plan.attachmentsAssumedUnchanged.length > 0) {
+			const one = plan.attachmentsAssumedUnchanged.length === 1;
+			body.push(`${formatAttachmentNames(plan.attachmentsAssumedUnchanged)} ${one ? 'is' : 'are'} the same size and assumed unchanged.`);
+		}
+
+		// Offer the choices, recommended action rightmost, and translate the pick back
+		// into a decision.
+		const choices = atRisk
+			? [{ label: 'Restore text only' }, { label: 'Snapshot & restore', cta: true }]
+			: [{ label: 'Restore text only' }, { label: 'Replace attachments', cta: true }];
+
+		const index = await new Promise<number | null>((resolve) =>
+			new ChoiceModal(this.app, { title: `Restore ${target}`, body, list, choices }, resolve).open(),
+		);
+		if (index === null) return null;
+		if (index === 0) return { kind: 'restore', mode: 'skip', dropUnsavedWork: false };
+		return atRisk ? { kind: 'backupAndRestore' } : { kind: 'restore', mode: 'replace', dropUnsavedWork: false };
+	}
+
+	/**
+	 * Restore over a note with unsaved changes and no attachment at stake: keep the
+	 * unsaved text as a backup snapshot first (the default), or discard it. Cancel
+	 * backs out.
+	 */
+	private async promptRestoreOverUnsaved(row: SnapshotRow): Promise<RestoreDecision | null> {
+		const target = formatSnapshotLabel(row.n, row.name);
+		const index = await new Promise<number | null>((resolve) =>
+			new ChoiceModal(
+				this.app,
+				{
+					title: `Restore ${target}`,
+					body: [
+						'The current content has unsaved work.',
+						'This restore will overwrite the note.',
+					],
+					choices: [
+						{ label: 'Restore only' },
+						{ label: 'Snapshot & restore', cta: true },
+					],
+				},
+				resolve,
+			).open(),
+		);
+		if (index === null) return null;
+		return index === 1
+			? { kind: 'restore', mode: 'skip', dropUnsavedWork: false }
+			: { kind: 'restore', mode: 'skip', dropUnsavedWork: true };
+	}
+
+	/**
+	 * Refreshes every open pane showing `file` after a restore rewrote its embedded
+	 * attachments.
+	 *
+	 * An image embed renders once to an `app://…/pic.png?<mtime>` URL and is not
+	 * re-resolved while the pane stays open, so overwriting the file on disk leaves the
+	 * stale picture on screen until the note is closed and reopened. Rebuilding the view
+	 * is that reopen, done for the user: it tears the view down and reloads it from
+	 * disk, so the embed is resolved afresh against the new bytes. Obsidian restores the
+	 * cursor and scroll position as part of the rebuild.
+	 *
+	 * `rebuildView` is not in the public API; fall back to re-rendering the read view
+	 * (which covers Reading mode, the common case for a note whose attachment changed).
+	 */
+	private reloadEmbeds(file: TFile): void {
+		for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
+			const view = leaf.view;
+			if (!(view instanceof MarkdownView) || view.file?.path !== file.path) continue;
+			const rebuild = (leaf as unknown as { rebuildView?: () => void }).rebuildView;
+			if (typeof rebuild === 'function') rebuild.call(leaf);
+			else view.previewMode.rerender(true);
+		}
+	}
+
+	// --- Annotating, locking, deleting ---
+
+	async annotateSnapshot(noteId: string | null, row: SnapshotRow): Promise<void> {
+		if (!noteId) return;
+		const entered = await new Promise<{ name: string; message: string } | null>((resolve) =>
+			new SnapshotModal(
+				this.app,
+				{
+					title: `Annotate ${formatSnapshotLabel(row.n, row.name)}`,
+					cta: 'Save',
+					namePlaceholder: 'Leave empty to remove the name',
+					...(row.name === undefined ? {} : { initialName: row.name }),
+					...(row.message === undefined ? {} : { initialMessage: row.message }),
+				},
+				resolve,
+			).open(),
+		);
+		if (entered === null) return;
+		try {
+			await this.snapshots.annotateSnapshot(noteId, row.snapshotId, entered.name, entered.message);
+			this.refreshViews();
+		} catch (error) {
+			this.reportError('Could not update that snapshot', error);
+		}
+	}
+
+	async toggleLockSnapshot(noteId: string | null, row: SnapshotRow): Promise<void> {
+		if (!noteId) return;
+		try {
+			await this.snapshots.setSnapshotLocked(noteId, row.snapshotId, !row.locked);
+			new Notice(row.locked ? `Unlocked ${formatSnapshotLabel(row.n, row.name)}.` : `Locked ${formatSnapshotLabel(row.n, row.name)}.`);
+			this.refreshViews();
+		} catch (error) {
+			this.reportError('Could not update the lock', error);
+		}
+	}
+
+	async deleteSnapshot(noteId: string | null, row: SnapshotRow): Promise<void> {
+		if (!noteId) return;
+
+		if (row.locked) {
+			new Notice(`${formatSnapshotLabel(row.n, row.name)} is locked. Unlock it before deleting.`);
+			return;
+		}
+
+		if (this.settings.confirmDelete) {
+			const confirmed = await this.confirm({
+				title: 'Delete snapshot',
+				message: `Permanently delete ${formatSnapshotLabel(row.n, row.name)}?`,
+				cta: 'Delete',
+				destructive: true,
+			});
+			if (!confirmed) return;
+		}
+
+		try {
+			await this.snapshots.removeSnapshot(noteId, row.snapshotId);
+			new Notice(`Deleted V${row.n}.`);
+			this.refreshViews();
+		} catch (error) {
+			this.reportError('Could not delete that snapshot', error);
+		}
+	}
+
+	async deleteAllSnapshots(noteId: string | null, file: TFile | null): Promise<void> {
+		if (!noteId) return;
+		const confirmed = await this.confirm({
+			title: 'Delete all snapshots',
+			message: `Permanently delete every stored snapshot of "${file?.basename ?? 'this note'}"? Locked snapshots are kept, and the note itself is not touched.`,
+			cta: 'Delete all',
+			destructive: true,
+		});
+		if (!confirmed) return;
+
+		try {
+			const { removed, kept } = await this.snapshots.removeAllSnapshots(noteId);
+			new Notice(
+				kept > 0
+					? `Deleted ${removed} snapshot${removed === 1 ? '' : 's'}. ${kept} locked snapshot${kept === 1 ? '' : 's'} kept.`
+					: 'Deleted all snapshots of this note.',
+			);
+			this.refreshViews();
+		} catch (error) {
+			this.reportError('Could not delete this note’s snapshots', error);
+		}
+	}
+
+	// --- Cleaning up deleted notes ---
+
+	async purgeOrphans(): Promise<number> {
+		const days = this.settings.purgeOrphansAfterDays;
+		if (days <= 0) return 0;
+		try {
+			return await this.identity.purgeOrphans(days);
+		} catch (error) {
+			this.reportError('Could not clean up deleted notes', error);
+			return 0;
+		}
+	}
+
+	// --- Shared internals ---
+
+	/** The working state, or null when it could not be determined; callers treat that as "not safe". */
+	private async getWorkingStateOrNull(file: TFile): Promise<WorkingState | null> {
+		try {
+			return await this.snapshots.getWorkingState(file);
+		} catch (error) {
+			console.error('Note Snapshots: could not read the working state.', error);
+			return null;
+		}
+	}
+
+	private requireFile(file: TFile | null): file is TFile {
+		if (!file) {
+			new Notice('Open a markdown note first.');
+			return false;
+		}
+		return true;
+	}
+
+	private confirm(options: {
+		title: string;
+		message: string;
+		cta: string;
+		destructive?: boolean;
+	}): Promise<boolean> {
+		return new Promise((resolve) => new ConfirmModal(this.app, options, resolve).open());
+	}
+
+	private reportError(summary: string, error: unknown): void {
+		const detail = error instanceof Error ? error.message : String(error);
+		console.error(`Note Snapshots: ${summary}.`, error);
+		new Notice(`${summary}: ${detail}`, 8000);
+	}
+}

@@ -1,0 +1,50 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/typescript-node
+{
+	"name": "Note Snapshots Plugin",
+	// Node 22 LTS satisfies the toolchain requirement of node >=20.19.6.
+	"image": "mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm",
+
+	"features": {
+		"ghcr.io/devcontainers/features/github-cli:1": {}
+	},
+
+	// pnpm's content-addressable store lives in a named volume so installs survive rebuilds.
+	"mounts": [
+		"source=ovc-pnpm-store,target=/home/node/.local/share/pnpm/store,type=volume"
+	],
+
+	"onCreateCommand": "sudo chown -R node:node /home/node/.local/share/pnpm",
+	"postCreateCommand": ".devcontainer/post-create.sh",
+
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"dbaeumer.vscode-eslint",
+				"esbenp.prettier-vscode",
+				"editorconfig.editorconfig",
+				"eamodio.gitlens"
+			],
+			"settings": {
+				"typescript.tsdk": "node_modules/typescript/lib",
+				"typescript.enablePromptUseWorkspaceTsdk": true,
+				"editor.formatOnSave": true,
+				"files.eol": "\n",
+				"terminal.integrated.defaultProfile.linux": "bash"
+			}
+		}
+	},
+
+	"remoteEnv": {
+		"PNPM_HOME": "/home/node/.local/share/pnpm",
+		"PATH": "/home/node/.local/share/pnpm:${containerEnv:PATH}",
+		// Point OBSIDIAN_VAULT at a vault mounted into the container and the build
+		// installs into <vault>/.obsidian/plugins/<plugin id>/. Use
+		// OBSIDIAN_PLUGIN_DIR instead to name that folder exactly. With both empty,
+		// the build writes dist/<plugin id>/ for you to copy out by hand.
+		"OBSIDIAN_VAULT": "",
+		"OBSIDIAN_PLUGIN_DIR": ""
+	},
+
+	"remoteUser": "node"
+}

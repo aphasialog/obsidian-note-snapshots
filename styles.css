@@ -1,0 +1,267 @@
+/* Note Snapshots */
+
+.ns-view {
+	padding: 0.75rem 0.5rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.6rem;
+}
+
+.ns-header {
+	display: flex;
+	flex-direction: column;
+	gap: 0.15rem;
+}
+
+.ns-file-name {
+	font-weight: var(--font-semibold);
+	overflow-wrap: anywhere;
+}
+
+.ns-state {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.ns-state-unsaved {
+	color: var(--text-warning);
+}
+
+.ns-actions {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+}
+
+.ns-actions button.ns-save {
+	flex: 1;
+}
+
+.ns-icon-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0.25rem;
+	background: transparent;
+	box-shadow: none;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.ns-icon-button:hover {
+	color: var(--text-normal);
+	background: var(--background-modifier-hover);
+}
+
+.ns-empty {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	padding: 0.5rem 0.25rem;
+}
+
+.ns-list {
+	display: flex;
+	flex-direction: column;
+}
+
+.ns-row {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+	padding: 0.4rem 0.35rem;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.ns-row:hover {
+	background: var(--background-modifier-hover);
+}
+
+.ns-row-current {
+	box-shadow: inset 2px 0 0 0 var(--interactive-accent);
+}
+
+.ns-row-main {
+	flex: 1;
+	min-width: 0;
+	cursor: pointer;
+}
+
+.ns-row-title {
+	display: flex;
+	align-items: center;
+	gap: 0.3rem;
+	overflow-wrap: anywhere;
+}
+
+.ns-row-lock-icon {
+	display: inline-flex;
+	flex-shrink: 0;
+	color: var(--text-muted);
+}
+
+.ns-row-lock-icon svg {
+	width: 0.8em;
+	height: 0.8em;
+}
+
+.ns-row-meta {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+}
+
+.ns-row-created {
+	margin-top: 0.15rem;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-faint);
+}
+
+.ns-row-message {
+	margin-top: 0.25rem;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 3;
+	overflow: hidden;
+}
+
+/* Modals */
+
+.ns-wide-modal {
+	width: min(90vw, 60rem);
+}
+
+.ns-prompt-input {
+	width: 100%;
+}
+
+.ns-confirm-message {
+	margin-top: 0;
+	color: var(--text-muted);
+}
+
+.ns-choice-list {
+	margin: 0 0 0.8rem;
+	padding-left: 1.2rem;
+	color: var(--text-muted);
+	font-family: var(--font-monospace);
+	font-size: var(--font-smaller);
+}
+
+.ns-choice-list li {
+	overflow-wrap: anywhere;
+}
+
+/* This row has no name/description, only buttons — drop the (empty) info column so
+   the control column spans the full width and a gap can reach the dialog's left edge. */
+.ns-choice-buttons .setting-item-info {
+	display: none;
+}
+
+.ns-choice-buttons .setting-item-control {
+	flex: 1;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+}
+
+/* Pushes everything after it (Cancel, then the recommended action) to the right,
+   leaving the non-recommended choice pinned to the left edge of the row. */
+.ns-choice-buttons .ns-choice-gap-after {
+	margin-right: auto;
+}
+
+.ns-modal-notice {
+	margin: 0 0 0.8rem;
+	padding: 0.5rem 0.7rem;
+	color: var(--text-muted);
+	background: var(--background-modifier-hover);
+	border-left: 3px solid var(--text-accent);
+	border-radius: var(--radius-s);
+}
+
+.ns-setting-preview {
+	margin-top: 0.35rem;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-accent);
+}
+
+.ns-diff {
+	max-height: 60vh;
+	overflow: auto;
+	font-family: var(--font-monospace);
+	font-size: var(--font-smaller);
+	background: var(--background-primary-alt);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	padding: 0.6rem;
+}
+
+.ns-diff-summary {
+	margin: 0 0 0.5rem;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.ns-diff-line {
+	display: grid;
+	grid-template-columns: 3em 3em 1em 1fr;
+	column-gap: 0.3rem;
+	padding: 0 0.2rem;
+}
+
+.ns-diff-gutter {
+	text-align: right;
+	color: var(--text-faint);
+	user-select: none;
+}
+
+.ns-diff-marker {
+	text-align: center;
+	color: var(--text-faint);
+	user-select: none;
+}
+
+.ns-diff-text {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.ns-diff-add {
+	background: rgba(var(--color-green-rgb), 0.15);
+	color: var(--text-normal);
+}
+
+.ns-diff-del {
+	background: rgba(var(--color-red-rgb), 0.15);
+	color: var(--text-normal);
+}
+
+.ns-diff-add .ns-diff-emph {
+	background: rgba(var(--color-green-rgb), 0.4);
+	border-radius: var(--radius-s);
+}
+
+.ns-diff-del .ns-diff-emph {
+	background: rgba(var(--color-red-rgb), 0.4);
+	border-radius: var(--radius-s);
+}
+
+.ns-diff-ctx {
+	color: var(--text-muted);
+}
+
+.ns-diff-fold {
+	padding: 0.15rem 0.2rem;
+	color: var(--text-faint);
+	text-align: center;
+	cursor: pointer;
+	user-select: none;
+}
+
+.ns-diff-fold:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-muted);
+}

@@ -141,3 +141,17 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+**/.DS_Store
+
+# Build output
+dist/
+main.js
+main.js.map
+
+# Test bundle
+test/.build/
+
+# Personal notes, not project convention
+.local/
+AGENTS.md
