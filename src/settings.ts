@@ -9,7 +9,7 @@ import type { WorkingState } from '@/types';
  *                     than the restore just moving `activeSnapshotId`.
  *  - `never`        — restore immediately.
  *
- * `when-unsaved` is judged by note text alone (see `findSnapshotIdByContent`) — an
+ * `when-unsaved` is judged by note text alone (see `findSnapshotIdByNoteContent`) — an
  * attachment changed in place doesn't move it, so the working-state badge can read
  * "clean" while an attachment has actually drifted.
  *

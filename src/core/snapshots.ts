@@ -13,6 +13,7 @@ import type { TaskQueue } from '@/util/task-queue';
 import { algorithmsDiffer, hashNoteContent } from '@/util/hash';
 import {
 	captureAttachments,
+	hasSnapshotWithAttachment,
 	planAttachmentChanges,
 	restoreAttachments,
 	type AttachmentChange,
@@ -23,6 +24,41 @@ export type { AttachmentConflictMode };
 
 /** The name given to the one automatic snapshot the plugin ever takes. */
 export const UNSAVED_LABEL = 'Unsaved changes before restore';
+
+/**
+ * What a restore would touch beyond the note body, computed before asking the user.
+ *
+ * This is the proposal `restoreSnapshot`/`backupAndRestoreSnapshot` execute — not a
+ * preview they re-verify. `attachmentChanges` is the raw data they act on directly;
+ * the rest are basenames derived from it, for display only. See "Risks" in
+ * docs/implementation-plan.md for why re-scanning the vault a second time at restore
+ * time was deliberately not done.
+ */
+export interface RestorePlan {
+	target: SnapshotRow;
+	/**
+	 * The working file's state, or null if it could not be read. Text-only (see
+	 * `findSnapshotIdByNoteContent`) — it says nothing about attachments, and a caller
+	 * deciding whether to confirm should not treat "clean" here as "nothing to ask
+	 * about". `attachmentsToOverwriteAndCaptured`/`Uncaptured` below is the independent
+	 * signal for that; the UI checks those first and consults `workingState` only once
+	 * they're both empty (see `decideRestore`).
+	 */
+	workingState: WorkingState | null;
+	/** What `restoreSnapshot`/`backupAndRestoreSnapshot` execute against directly. */
+	attachmentChanges: AttachmentChange[];
+
+	// Everything below is derived from `attachmentChanges` above, for display only —
+	// reporting, not execution.
+	/** Missing attachments this restore wants to recreate — basenames. */
+	attachmentsToRecreate: string[];
+	/** Changed attachments this restore wants to overwrite, already captured in another snapshot — basenames. */
+	attachmentsToOverwriteAndCaptured: string[];
+	/** Changed attachments this restore wants to overwrite, captured nowhere else — replacing one destroys its only copy for good, unless a same-call backup happens to capture it first — basenames. */
+	attachmentsToOverwriteAndUncaptured: string[];
+	/** Present attachments too large to compare; a restore leaves them as they are. */
+	attachmentsAssumedUnchanged: string[];
+}
 
 export interface RestoreOutcome {
 	restored: SnapshotRow;
@@ -39,50 +75,6 @@ export interface RestoreOutcome {
 }
 
 /**
- * What a restore would touch beyond the note body, computed before asking the user.
- *
- * This is the proposal `restoreSnapshot`/`backupAndRestoreSnapshot` execute — not a
- * preview they re-verify. `attachmentChanges` is the raw data they act on directly;
- * the rest are basenames derived from it, for display only. See "Risks" in
- * docs/implementation-plan.md for why re-scanning the vault a second time at restore
- * time was deliberately not done.
- */
-export interface RestorePlan {
-	target: SnapshotRow;
-	/**
-	 * The working file's state, or null if it could not be read. Text-only (see
-	 * `findSnapshotIdByContent`) — it says nothing about attachments, and a caller
-	 * deciding whether to confirm should not treat "clean" here as "nothing to ask
-	 * about". `attachmentsToOverwriteAndCaptured`/`Uncaptured` below is the independent
-	 * signal for that; the UI checks those first and consults `workingState` only once
-	 * they're both empty (see `decideRestore`).
-	 */
-	workingState: WorkingState | null;
-	/** What `restoreSnapshot`/`backupAndRestoreSnapshot` execute against directly. */
-	attachmentChanges: AttachmentChange[];
-	/**
-	 * Hashes already captured in another snapshot at plan time, used to label an
-	 * overwritten attachment as recoverable or not in the outcome notice.
-	 *
-	 * This no longer gates whether an overwrite happens — `replace` always overwrites —
-	 * so a stale answer here costs at most a mislabeled notice (something reported gone
-	 * for good that a same-call backup actually just saved), never a wrong overwrite
-	 * decision. `executeRestorePlan` re-derives a fresher answer instead whenever this same
-	 * call took its own backup, since that is the one thing that can move a hash from
-	 * this set's "no" to a real "yes" mid-call.
-	 */
-	capturedAttachmentHashes: ReadonlySet<string>;
-	/** Missing attachments this restore wants to recreate — basenames. */
-	attachmentsToRecreate: string[];
-	/** Changed attachments this restore wants to overwrite, already captured in another snapshot — basenames. */
-	attachmentsToOverwriteAndCaptured: string[];
-	/** Changed attachments this restore wants to overwrite, captured nowhere else — replacing one destroys its only copy for good, unless a same-call backup happens to capture it first — basenames. */
-	attachmentsToOverwriteAndUncaptured: string[];
-	/** Present attachments too large to compare; a restore leaves them as they are. */
-	attachmentsAssumedUnchanged: string[];
-}
-
-/**
  * Manages the snapshot history of every note, one at a time per call.
  *
  * Four rules govern everything here:
@@ -90,10 +82,6 @@ export interface RestorePlan {
  *  - R1 Restoring is a checkout. It writes content and moves `activeSnapshotId`; it never
  *       creates a snapshot. It does not rename or move the note — that is the
  *       user's to do.
- *  - R2 A snapshot is a no-op when the content already exists anywhere in the
- *       note's history, not merely at the tip. Renaming or moving a note is not a
- *       change on its own. An explicit save can pass `allowDuplicate` to override
- *       this.
  *  - R3 `activeSnapshotId` records which snapshot the working file currently matches.
  *  - R4 The only automatic snapshot fires when the working content matches no
  *       stored snapshot, i.e. real unsaved work would otherwise be lost.
@@ -107,14 +95,14 @@ export class SnapshotService {
 		private readonly identity: IdentityService,
 		private readonly queue: TaskQueue,
 		/** Reads what the user currently sees, which may not be flushed to disk yet. */
-		private readonly readContent: (file: TFile) => Promise<string>,
+		private readonly readNoteContent: (file: TFile) => Promise<string>,
 	) {}
 
 	// --- Reading state ---
 
 	/** Snapshots newest first, each with a freshly computed display number. */
 	async listSnapshots(noteId: string): Promise<SnapshotRow[]> {
-		const manifest = await this.store.loadNoteJson(noteId);
+		const manifest = await this.store.loadNoteManifest(noteId);
 		if (!manifest) return [];
 		const numbers = numberByAge(manifest.snapshots);
 		return Object.entries(manifest.snapshots)
@@ -123,22 +111,28 @@ export class SnapshotService {
 	}
 
 	async getManifest(noteId: string): Promise<NoteManifest | null> {
-		return this.store.loadNoteJson(noteId);
+		return this.store.loadNoteManifest(noteId);
 	}
 
 	async readSnapshot(noteId: string, snapshotId: string): Promise<string | null> {
 		return this.store.readSnapshot(noteId, snapshotId);
 	}
 
-	/** Whether the working file matches a stored snapshot (rule R3). */
+	/**
+	 * Whether the working file matches a stored snapshot (rule R3).
+	 *
+	 * Text-only — it says nothing about attachments. A changed-in-place attachment is
+	 * detected separately, during `planRestore`'s own comparison against the vault, and
+	 * a caller deciding whether to confirm a restore must check both (see `RestorePlan`).
+	 */
 	async getWorkingState(file: TFile): Promise<WorkingState> {
 		const noteId = await this.identity.resolveNoteId(file);
 		if (!noteId) return { kind: 'untracked' };
-		const manifest = await this.store.loadNoteJson(noteId);
+		const manifest = await this.store.loadNoteManifest(noteId);
 		if (!manifest || Object.keys(manifest.snapshots).length === 0) return { kind: 'untracked' };
 
-		const content = await this.readContent(file);
-		const matchId = await this.findSnapshotIdByContent(manifest, content, await hashNoteContent(content));
+		const content = await this.readNoteContent(file);
+		const matchId = await this.findSnapshotIdByNoteContent(manifest, content, await hashNoteContent(content));
 		if (!matchId) return { kind: 'unsaved' };
 		const meta = manifest.snapshots[matchId]!;
 		return {
@@ -149,45 +143,24 @@ export class SnapshotService {
 		};
 	}
 
-	// --- Saving a snapshot (R2) ---
+	// --- Saving a snapshot ---
 
 	/**
-	 * Captures the note's current content.
-	 *
-	 * Rule R2: if the content already exists anywhere in this note's history, no
-	 * snapshot is created — `activeSnapshotId` simply moves to the snapshot that already holds it.
-	 * Renaming or moving the note does not by itself make a new snapshot.
-	 * `allowDuplicate` overrides the no-op so an explicit, informed "Save snapshot"
-	 * can add a twin.
+	 * Captures the note's current content as a new snapshot, unconditionally — every
+	 * explicit save records one, even if it is byte-identical to one already in the
+	 * note's history, so an explicit request is never silently dropped.
 	 */
-	async saveSnapshot(
-		file: TFile,
-		name?: string,
-		message?: string,
-		allowDuplicate = false,
-	): Promise<SnapshotOutcome> {
+	async saveSnapshot(file: TFile, name?: string, message?: string): Promise<SnapshotOutcome> {
 		const noteId = await this.identity.resolveOrCreateNoteId(file);
 		return this.queue.run(noteId, async () => {
-			const content = await this.readContent(file);
+			const content = await this.readNoteContent(file);
 			const hash = await hashNoteContent(content);
-			const manifest = (await this.store.loadNoteJson(noteId)) ?? emptyManifest(noteId, file.path);
+			const manifest = (await this.store.loadNoteManifest(noteId)) ?? emptyNoteManifest(noteId, file.path);
 			manifest.latestPath = file.path;
 
-			const existingId = await this.findSnapshotIdByContent(manifest, content, hash);
-			if (existingId && !allowDuplicate) {
-				manifest.activeSnapshotId = existingId;
-				// Adopt a label or note the matching snapshot does not already carry, so
-				// annotating an unchanged note still records the user's intent somewhere.
-				const meta = manifest.snapshots[existingId];
-				if (meta && name?.trim() && !meta.name) meta.name = name.trim();
-				if (meta && message?.trim() && !meta.message) meta.message = message.trim();
-				await this.store.saveNoteJson(manifest);
-				return { status: 'unchanged', row: this.toRow(manifest, existingId) };
-			}
-
 			const snapshotId = await this.createNewSnapshot(manifest, content, hash, file.path, name, message);
-			await this.store.saveNoteJson(manifest);
-			return { status: 'created', row: this.toRow(manifest, snapshotId) };
+			await this.store.saveNoteManifest(manifest);
+			return { row: this.toRow(manifest, snapshotId) };
 		});
 	}
 
@@ -201,7 +174,7 @@ export class SnapshotService {
 	async planRestore(file: TFile, snapshotId: string): Promise<RestorePlan> {
 		const noteId = await this.identity.resolveNoteId(file);
 		if (!noteId) throw new Error('This note has no snapshot history.');
-		const manifest = await this.store.loadNoteJson(noteId);
+		const manifest = await this.store.loadNoteManifest(noteId);
 		const target = manifest?.snapshots[snapshotId];
 		if (!manifest || !target) throw new Error('That snapshot no longer exists.');
 
@@ -213,7 +186,6 @@ export class SnapshotService {
 		}
 
 		let attachmentChanges: AttachmentChange[] = [];
-		const capturedAttachmentHashes = new Set<string>();
 		const attachmentsToRecreate: string[] = [];
 		const attachmentsToOverwriteAndCaptured: string[] = [];
 		const attachmentsToOverwriteAndUncaptured: string[] = [];
@@ -229,9 +201,8 @@ export class SnapshotService {
 					attachmentsAssumedUnchanged.push(entry.name);
 					continue;
 				}
-				if (this.hasSnapshotWithAttachment(manifest, entry.currentHash!)) {
+				if (hasSnapshotWithAttachment(manifest, entry.currentHash!)) {
 					attachmentsToOverwriteAndCaptured.push(entry.name);
-					capturedAttachmentHashes.add(entry.currentHash!);
 				} else {
 					attachmentsToOverwriteAndUncaptured.push(entry.name);
 				}
@@ -244,7 +215,6 @@ export class SnapshotService {
 			target: this.toRow(manifest, snapshotId),
 			workingState,
 			attachmentChanges,
-			capturedAttachmentHashes,
 			attachmentsToRecreate,
 			attachmentsToOverwriteAndCaptured,
 			attachmentsToOverwriteAndUncaptured,
@@ -325,7 +295,7 @@ export class SnapshotService {
 	): Promise<RestoreOutcome> {
 		const snapshotId = plan.target.snapshotId;
 		return this.queue.run(noteId, async () => {
-			const manifest = await this.store.loadNoteJson(noteId);
+			const manifest = await this.store.loadNoteManifest(noteId);
 			const target = manifest?.snapshots[snapshotId];
 			if (!manifest || !target) throw new Error('That snapshot no longer exists.');
 
@@ -334,7 +304,7 @@ export class SnapshotService {
 				throw new Error('That snapshot’s content is missing from the store.');
 			}
 
-			const current = await this.readContent(file);
+			const current = await this.readNoteContent(file);
 			let backupId: string | null = null;
 
 			// Trusts `plan.workingState` (rule R4's dedup check) rather than re-deriving it —
@@ -349,24 +319,20 @@ export class SnapshotService {
 			}
 
 			await this.app.vault.modify(file, targetContent);
-			// A backup taken just above is the only thing that can make a hash newly
-			// recoverable since the plan was built, so that is the only case worth
-			// re-checking the manifest live for; otherwise `plan.capturedAttachmentHashes`
-			// already has the answer.
-			const isRecoverable = backupId
-				? (currentHash: string) => this.hasSnapshotWithAttachment(manifest, currentHash)
-				: (currentHash: string) => plan.capturedAttachmentHashes.has(currentHash);
+			// `restoreAttachments` checks recoverability against `manifest` itself — the
+			// copy already loaded above, not re-fetched — since that check only affects
+			// how the outcome notice labels an overwrite, never whether it happens.
 			const attachments = await restoreAttachments(
 				this.app,
 				this.store,
 				noteId,
 				plan.attachmentChanges,
 				decision.overwriteMode,
-				isRecoverable,
+				manifest,
 			);
 			manifest.activeSnapshotId = snapshotId;
 			manifest.latestPath = file.path;
-			await this.store.saveNoteJson(manifest);
+			await this.store.saveNoteManifest(manifest);
 
 			return {
 				restored: this.toRow(manifest, snapshotId),
@@ -383,7 +349,7 @@ export class SnapshotService {
 
 	async removeSnapshot(noteId: string, snapshotId: string): Promise<void> {
 		await this.queue.run(noteId, async () => {
-			const manifest = await this.store.loadNoteJson(noteId);
+			const manifest = await this.store.loadNoteManifest(noteId);
 			const meta = manifest?.snapshots[snapshotId];
 			if (!manifest || !meta) return;
 			if (meta.locked) throw new Error('This snapshot is locked. Unlock it before deleting.');
@@ -391,14 +357,14 @@ export class SnapshotService {
 			delete manifest.snapshots[snapshotId];
 			if (manifest.activeSnapshotId === snapshotId) manifest.activeSnapshotId = null;
 			await this.gcAttachments(manifest, [meta]);
-			await this.store.saveNoteJson(manifest);
+			await this.store.saveNoteManifest(manifest);
 		});
 	}
 
 	/** Drops every unlocked snapshot of a note, leaving locked snapshots and the note itself untouched. */
 	async removeAllSnapshots(noteId: string): Promise<{ removed: number; kept: number }> {
 		return this.queue.run(noteId, async () => {
-			const manifest = await this.store.loadNoteJson(noteId);
+			const manifest = await this.store.loadNoteManifest(noteId);
 			if (!manifest) return { removed: 0, kept: 0 };
 
 			let removed = 0;
@@ -416,7 +382,7 @@ export class SnapshotService {
 			}
 			if (manifest.activeSnapshotId && !manifest.snapshots[manifest.activeSnapshotId]) manifest.activeSnapshotId = null;
 			await this.gcAttachments(manifest, removedMetas);
-			await this.store.saveNoteJson(manifest);
+			await this.store.saveNoteManifest(manifest);
 			return { removed, kept };
 		});
 	}
@@ -426,19 +392,19 @@ export class SnapshotService {
 	/** Locks or unlocks a snapshot, protecting it from deletion (single and bulk). */
 	async setSnapshotLocked(noteId: string, snapshotId: string, locked: boolean): Promise<void> {
 		await this.queue.run(noteId, async () => {
-			const manifest = await this.store.loadNoteJson(noteId);
+			const manifest = await this.store.loadNoteManifest(noteId);
 			const meta = manifest?.snapshots[snapshotId];
 			if (!manifest || !meta) return;
 			if (locked) meta.locked = true;
 			else delete meta.locked;
-			await this.store.saveNoteJson(manifest);
+			await this.store.saveNoteManifest(manifest);
 		});
 	}
 
 	/** Updates a snapshot's label and note together. An empty string clears that field. */
 	async annotateSnapshot(noteId: string, snapshotId: string, name: string, message: string): Promise<void> {
 		await this.queue.run(noteId, async () => {
-			const manifest = await this.store.loadNoteJson(noteId);
+			const manifest = await this.store.loadNoteManifest(noteId);
 			const meta = manifest?.snapshots[snapshotId];
 			if (!manifest || !meta) return;
 			const trimmedName = name.trim();
@@ -447,7 +413,7 @@ export class SnapshotService {
 			const trimmedMessage = message.trim();
 			if (trimmedMessage.length > 0) meta.message = trimmedMessage;
 			else delete meta.message;
-			await this.store.saveNoteJson(manifest);
+			await this.store.saveNoteManifest(manifest);
 		});
 	}
 
@@ -477,7 +443,7 @@ export class SnapshotService {
 	 * snapshots hold identical content. Used by getWorkingState, saveSnapshot, and
 	 * restoreSnapshot.
 	 */
-	private async findSnapshotIdByContent(
+	private async findSnapshotIdByNoteContent(
 		manifest: NoteManifest,
 		content: string,
 		hash: string,
@@ -505,11 +471,6 @@ export class SnapshotService {
 			if (stored === content) return id;
 		}
 		return null;
-	}
-
-	/** True if some snapshot's stored attachments still include `hash`. Used by planRestore and restoreSnapshot. */
-	private hasSnapshotWithAttachment(manifest: NoteManifest, hash: string): boolean {
-		return Object.values(manifest.snapshots).some((meta) => (meta.attachments ?? []).some((ref) => ref.hash === hash));
 	}
 
 	/** Writes content as a new snapshot, points `activeSnapshotId` at it, and returns its id. Caller runs inside the note's queue. Used by saveSnapshot and restoreSnapshot. */
@@ -569,7 +530,7 @@ export class SnapshotService {
 // --- Module-level private helpers ---
 
 /** A fresh manifest for a note that has no history yet. */
-function emptyManifest(noteId: string, latestPath: string): NoteManifest {
+function emptyNoteManifest(noteId: string, latestPath: string): NoteManifest {
 	return {
 		schemaVersion: SCHEMA_VERSION,
 		noteId,

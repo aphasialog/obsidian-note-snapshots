@@ -100,13 +100,18 @@ export interface AttachmentRef {
 
 // --- Others: runtime-only types, not part of any on-disk schema ---
 
-/** Whether the working file matches a stored snapshot. */
+/**
+ * Whether the working file matches a stored snapshot.
+ *
+ * Note text only — it says nothing about embedded attachments. An attachment changed
+ * in place can still read as `clean` here.
+ */
 export type WorkingState =
 	/** The content is already in the history, as snapshot `snapshotId` (display number `n`, optional label). */
 	| { kind: 'clean'; snapshotId: string; n: number; name?: string }
 	| { kind: 'unsaved' }
 	| { kind: 'untracked' };
 
-export type SnapshotOutcome =
-	| { status: 'created'; row: SnapshotRow }
-	| { status: 'unchanged'; row: SnapshotRow };
+export interface SnapshotOutcome {
+	row: SnapshotRow;
+}

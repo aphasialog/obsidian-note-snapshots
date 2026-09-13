@@ -1,7 +1,7 @@
 import { TFile, type App } from 'obsidian';
 import type { Store } from '@/core/store';
 import type { TaskQueue } from '@/util/task-queue';
-import { readNoteId, writeNoteId } from '@/util/frontmatter';
+import { readNoteIdFromFrontmatter, writeNoteIdToFrontmatter } from '@/util/frontmatter';
 
 /**
  * Owns the mapping between a note and its history.
@@ -21,12 +21,15 @@ export class IdentityService {
 
 	// --- Resolving or minting a note's id ---
 
-	/** Resolves a note's id without creating anything. Null when it has no history. */
+	/**
+	 * Resolves a note's id without creating anything. Null when it has no history —
+	 * including when its `ns-id` is missing or unreadable. No path-based guessing:
+	 * the plugin never silently links a note to history it did not itself claim.
+	 */
 	async resolveNoteId(file: TFile): Promise<string | null> {
 		if (file.extension !== 'md') return null;
-		const claimedId = await readNoteId(this.app, file);
-		if (claimedId) return this.reconcileNoteId(file, claimedId);
-		return this.recoverAndStampId(file);
+		const claimedId = await readNoteIdFromFrontmatter(this.app, file);
+		return claimedId ? this.reconcileNoteId(file, claimedId) : null;
 	}
 
 	/** Resolves a note's id, minting and stamping one if it has none. */
@@ -38,7 +41,7 @@ export class IdentityService {
 		if (existing) return existing;
 
 		const noteId = newNoteId();
-		await writeNoteId(this.app, file, noteId);
+		await writeNoteIdToFrontmatter(this.app, file, noteId);
 		await this.registerNoteId(noteId, file.path);
 		return noteId;
 	}
@@ -49,20 +52,21 @@ export class IdentityService {
 	 * the same history (a copy).
 	 */
 	private async reconcileNoteId(file: TFile, claimedId: string): Promise<string> {
-		const central = await this.store.loadCentralJson();
+		const central = await this.store.getCentralManifest();
 		const entry = central.notes[claimedId];
 
+		// Case 1: the note id is not recorded — adopt it, so a lost or partially synced
+		// central manifest does not orphan an existing history.
 		if (!entry) {
-			// The note carries an id we have no record of — adopt it, so a lost or
-			// partially synced central manifest does not orphan an existing history.
 			await this.registerNoteId(claimedId, file.path);
 			return claimedId;
 		}
 
+		// Case 2: the note is exactly where the record says it is.
 		if (entry.latestPath === file.path) {
 			if (entry.orphanedAt !== undefined) {
 				// The note is back (undo, or sync restored it). Un-orphan it.
-				await this.store.updateCentralJson((manifest) => {
+				await this.store.mutateCentralManifest((manifest) => {
 					const current = manifest.notes[claimedId];
 					if (current) delete current.orphanedAt;
 				});
@@ -70,36 +74,20 @@ export class IdentityService {
 			return claimedId;
 		}
 
+		// Case 3: a different live file already sits at the recorded path claiming the
+		// same id — this file is the copy. Fork it onto a fresh, empty history.
 		if (await this.shouldForkFile(entry.latestPath, claimedId, file.path)) {
 			const forked = newNoteId();
-			await writeNoteId(this.app, file, forked);
+			await writeNoteIdToFrontmatter(this.app, file, forked);
 			await this.registerNoteId(forked, file.path);
 			this.onFork(file);
 			return forked;
 		}
 
-		// The recorded path is gone, or now holds an unrelated note: this was a move.
-		await this.updatePath(claimedId, file.path);
+		// Case 4: the file was moved, so the recorded path is stale — nothing else at
+		// the old path claims this id (Case 3 would have caught a fork). Update it.
+		await this.updateLatestPath(claimedId, file.path);
 		return claimedId;
-	}
-
-	/**
-	 * Last resort when a note carries no id: find a history recorded against this
-	 * exact path, then stamp that id back into the note's frontmatter so it carries
-	 * one again. Covers frontmatter stripped by an external tool.
-	 */
-	private async recoverAndStampId(file: TFile): Promise<string | null> {
-		const central = await this.store.loadCentralJson();
-		for (const [noteId, entry] of Object.entries(central.notes)) {
-			// Skip orphans, so a brand-new note reusing a deleted note's path does not
-			// silently inherit its history.
-			if (entry.latestPath !== file.path || entry.orphanedAt !== undefined) continue;
-			const manifest = await this.store.loadNoteJson(noteId);
-			if (!manifest || Object.keys(manifest.snapshots).length === 0) continue;
-			await writeNoteId(this.app, file, noteId);
-			return noteId;
-		}
-		return null;
 	}
 
 	/**
@@ -111,14 +99,15 @@ export class IdentityService {
 	 * it forks onto an empty history and the original keeps everything.
 	 */
 	private async shouldForkFile(path: string, noteId: string, selfPath: string): Promise<boolean> {
+		// Sanity check — the caller already knows the paths differ, so this should never fire.
 		if (path === selfPath) return false;
 		const other = this.app.vault.getAbstractFileByPath(path);
 		if (!(other instanceof TFile)) return false;
-		return (await readNoteId(this.app, other)) === noteId;
+		return (await readNoteIdFromFrontmatter(this.app, other)) === noteId;
 	}
 
 	private async registerNoteId(noteId: string, latestPath: string): Promise<void> {
-		await this.store.updateCentralJson((manifest) => {
+		await this.store.mutateCentralManifest((manifest) => {
 			manifest.notes[noteId] = { latestPath, updatedAt: new Date().toISOString() };
 		});
 	}
@@ -126,8 +115,8 @@ export class IdentityService {
 	// --- Keeping the recorded path in sync with vault events ---
 
 	/** Updates the cached path in both manifests. Never touches identity. */
-	async updatePath(noteId: string, latestPath: string): Promise<void> {
-		await this.store.updateCentralJson((manifest) => {
+	async updateLatestPath(noteId: string, latestPath: string): Promise<void> {
+		await this.store.mutateCentralManifest((manifest) => {
 			const entry = manifest.notes[noteId];
 			if (entry) {
 				entry.latestPath = latestPath;
@@ -138,20 +127,26 @@ export class IdentityService {
 			}
 		});
 		await this.queue.run(noteId, async () => {
-			const note = await this.store.loadNoteJson(noteId);
+			const note = await this.store.loadNoteManifest(noteId);
 			if (!note || note.latestPath === latestPath) return;
 			note.latestPath = latestPath;
-			await this.store.saveNoteJson(note);
+			await this.store.saveNoteManifest(note);
 		});
 	}
 
-	/** Handles an in-vault rename or move: a path-cache update, nothing more. */
-	async handleRename(file: TFile, oldPath: string): Promise<void> {
+	/**
+	 * Handles an in-vault rename or move: a path-cache update, nothing more.
+	 *
+	 * Trusts frontmatter only — no path-based fallback. If the id is gone from
+	 * frontmatter, that note is untracked as far as this plugin is concerned; trying
+	 * to infer its identity from the old path would be exactly the kind of guess
+	 * identity is designed never to depend on.
+	 */
+	async handleRename(file: TFile): Promise<void> {
 		if (file.extension !== 'md') return;
-		const claimedId = await readNoteId(this.app, file);
-		const noteId = claimedId ?? (await this.findNoteIdByPath(oldPath));
+		const noteId = await readNoteIdFromFrontmatter(this.app, file);
 		if (!noteId) return;
-		await this.updatePath(noteId, file.path);
+		await this.updateLatestPath(noteId, file.path);
 	}
 
 	/**
@@ -162,14 +157,21 @@ export class IdentityService {
 	async handleDelete(path: string): Promise<void> {
 		const noteId = await this.findNoteIdByPath(path);
 		if (!noteId) return;
-		await this.store.updateCentralJson((manifest) => {
+		await this.store.mutateCentralManifest((manifest) => {
 			const entry = manifest.notes[noteId];
 			if (entry) entry.orphanedAt = new Date().toISOString();
 		});
 	}
 
+	/**
+	 * Finds a note id whose central-manifest entry's `latestPath` matches `path`.
+	 *
+	 * Used only by `handleDelete`, which has no alternative: the file is already gone
+	 * by the time it fires, so there is no frontmatter left to read, and this lookup
+	 * is the only way to identify which note's history to orphan.
+	 */
 	private async findNoteIdByPath(path: string): Promise<string | null> {
-		const central = await this.store.loadCentralJson();
+		const central = await this.store.getCentralManifest();
 		for (const [noteId, entry] of Object.entries(central.notes)) {
 			if (entry.latestPath === path) return noteId;
 		}
@@ -180,7 +182,7 @@ export class IdentityService {
 
 	/** Ids whose note was deleted at least `days` ago. */
 	async listPurgeableOrphans(days: number): Promise<string[]> {
-		const central = await this.store.loadCentralJson();
+		const central = await this.store.getCentralManifest();
 		const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
 		const purgeable: string[] = [];
 		for (const [noteId, entry] of Object.entries(central.notes)) {
@@ -196,7 +198,7 @@ export class IdentityService {
 		const purgeable = await this.listPurgeableOrphans(days);
 		for (const noteId of purgeable) {
 			await this.queue.run(noteId, () => this.store.removeNoteStore(noteId));
-			await this.store.updateCentralJson((manifest) => {
+			await this.store.mutateCentralManifest((manifest) => {
 				delete manifest.notes[noteId];
 			});
 		}

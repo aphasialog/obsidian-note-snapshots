@@ -28,27 +28,27 @@ export class Store {
 		this.central = null;
 	}
 
-	async loadCentralJson(): Promise<CentralManifest> {
+	async getCentralManifest(): Promise<CentralManifest> {
 		if (this.central) return this.central;
-		this.central = await this.readCentralJsonFromDisk();
+		this.central = await this.loadCentralManifestFromDisk();
 		return this.central;
 	}
 
 	/** Serialised read-modify-write of the central manifest. */
-	async updateCentralJson(mutate: (manifest: CentralManifest) => void): Promise<void> {
+	async mutateCentralManifest(mutate: (manifest: CentralManifest) => void): Promise<void> {
 		return this.queue.run(CENTRAL_QUEUE_KEY, async () => {
 			// Bypasses the cache: something outside this plugin (a sync client) may have
 			// written a newer central.json since we last loaded it, and writing back a
 			// stale cache here would silently discard whatever it brought in.
-			const manifest = await this.readCentralJsonFromDisk();
+			const manifest = await this.loadCentralManifestFromDisk();
 			mutate(manifest);
 			this.central = manifest;
-			await this.writeJson(this.paths.centralJson(), manifest);
+			await this.writeJson(this.paths.centralManifest(), manifest);
 		});
 	}
 
-	private async readCentralJsonFromDisk(): Promise<CentralManifest> {
-		const parsed = await this.readJson<CentralManifest>(this.paths.centralJson());
+	private async loadCentralManifestFromDisk(): Promise<CentralManifest> {
+		const parsed = await this.readJson<CentralManifest>(this.paths.centralManifest());
 		return parsed && typeof parsed.notes === 'object' && parsed.notes !== null
 			? { schemaVersion: parsed.schemaVersion ?? SCHEMA_VERSION, notes: parsed.notes }
 			: { schemaVersion: SCHEMA_VERSION, notes: {} };
@@ -56,8 +56,8 @@ export class Store {
 
 	// --- Note manifest (one manifest.json per note) ---
 
-	async loadNoteJson(noteId: string): Promise<NoteManifest | null> {
-		const parsed = await this.readJson<NoteManifest>(this.paths.noteJson(noteId));
+	async loadNoteManifest(noteId: string): Promise<NoteManifest | null> {
+		const parsed = await this.readJson<NoteManifest>(this.paths.noteManifest(noteId));
 		if (!parsed || typeof parsed.snapshots !== 'object' || parsed.snapshots === null) return null;
 		return {
 			schemaVersion: parsed.schemaVersion ?? SCHEMA_VERSION,
@@ -69,8 +69,15 @@ export class Store {
 		};
 	}
 
-	async saveNoteJson(manifest: NoteManifest): Promise<void> {
-		await this.writeJson(this.paths.noteJson(manifest.noteId), manifest);
+	/**
+	 * Writes the manifest as-is — unlike `mutateCentralManifest`, there is no re-read
+	 * from disk first. The same external-sync staleness risk exists here in theory, but
+	 * a note's manifest is written only by operations on that one note, not shared
+	 * across every note the way central.json is — so the risk is accepted rather than
+	 * paying for a read-modify-write nothing here is likely to need.
+	 */
+	async saveNoteManifest(manifest: NoteManifest): Promise<void> {
+		await this.writeJson(this.paths.noteManifest(manifest.noteId), manifest);
 	}
 
 	// --- Snapshot content files ---

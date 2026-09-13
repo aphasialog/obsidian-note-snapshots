@@ -1,9 +1,18 @@
 import { normalizePath, TFile, type App } from 'obsidian';
-import type { AttachmentRef, SnapshotMetadata } from '@/types';
+import type { AttachmentRef, NoteManifest, SnapshotMetadata } from '@/types';
 import type { Store } from '@/core/store';
 import { hashAttachmentBytes } from '@/util/hash';
 
+/**
+ * Matches `![[target]]` wikilink embeds — e.g. `![[image.png]]`, `![[image.png|caption]]`,
+ * or `![[image.png#heading]]` — capturing just `image.png` in every case.
+ */
 const WIKI_EMBED = /!\[\[([^\]|#]+)[^\]]*\]\]/g;
+
+/**
+ * Matches `![alt](path)` markdown embeds — e.g. `![](assets/diagram.svg)` or
+ * `![alt text](assets/diagram.svg "title")` — capturing just the path.
+ */
 const MD_EMBED = /!\[[^\]]*\]\(([^)\s]+)[^)]*\)/g;
 
 // --- Capturing attachments ---
@@ -169,6 +178,11 @@ export interface AttachmentChange {
 	currentHash?: string;
 }
 
+/** True if some snapshot's stored attachments still include `hash`. */
+export function hasSnapshotWithAttachment(manifest: NoteManifest, hash: string): boolean {
+	return Object.values(manifest.snapshots).some((meta) => (meta.attachments ?? []).some((ref) => ref.hash === hash));
+}
+
 /** Determines a snapshot's attachments' status against the vault now, without changing anything. */
 export async function planAttachmentChanges(
 	app: App,
@@ -207,35 +221,43 @@ async function determineAttachmentDispositions(
 	const out: AttachmentWithDisposition[] = [];
 	for (const ref of recordedSnapshot.attachments ?? []) {
 		const relocatedPath = relocateAttachmentPath(recordedSnapshot.path, currentNotePath, ref.path);
-		// A file at either the relocated home or the recorded one counts as present: the
-		// recorded-path check stops a stale copy left by a move from being treated as
-		// missing and spawning a duplicate basename Obsidian could then resolve instead.
-		const presentPath = (await app.vault.adapter.exists(relocatedPath))
-			? relocatedPath
-			: relocatedPath !== ref.path && (await app.vault.adapter.exists(ref.path))
-				? ref.path
-				: null;
 
-		if (presentPath === null) {
-			out.push({ ref, relocatedPath, presentPath, disposition: 'missing' });
+		// Case 1: nothing at the relocated home — missing. A stale copy left behind at
+		// the old recorded path does not count as present: leaving it in place instead
+		// of recreating here would silently break a relative embed the note now
+		// expects to resolve beside it. Recreating can leave a duplicate basename
+		// behind, but that is a stray file the user can delete — unlike a missing one,
+		// which they can only recover by digging into the snapshot store by hand.
+		if (!(await app.vault.adapter.exists(relocatedPath))) {
+			out.push({ ref, relocatedPath, presentPath: null, disposition: 'missing' });
 			continue;
 		}
 
-		const currentSize = await fileSize(app, presentPath);
+		// From here on the attachment is present at `relocatedPath`.
+		// Case 2: sizes disagree — settle `changed` without hashing.
+		const currentSize = await fileSize(app, relocatedPath);
 		if (typeof ref.size === 'number' && currentSize !== null && currentSize !== ref.size) {
-			out.push({ ref, relocatedPath, presentPath, disposition: 'changed', currentHash: await hashPath(app, presentPath) });
+			out.push({
+				ref,
+				relocatedPath,
+				presentPath: relocatedPath,
+				disposition: 'changed',
+				currentHash: await hashAttachment(app, relocatedPath),
+			});
 			continue;
 		}
+		// Case 3: same size, but too large to hash cheaply — assume unchanged.
 		if (typeof ref.size === 'number' && ref.size >= COMPARE_SIZE_CAP) {
-			out.push({ ref, relocatedPath, presentPath, disposition: 'assumedUnchanged' });
+			out.push({ ref, relocatedPath, presentPath: relocatedPath, disposition: 'assumedUnchanged' });
 			continue;
 		}
 
-		const currentHash = await hashPath(app, presentPath);
+		// Case 4: same size and small enough to hash — the hash decides.
+		const currentHash = await hashAttachment(app, relocatedPath);
 		out.push(
 			currentHash === ref.hash
-				? { ref, relocatedPath, presentPath, disposition: 'unchanged' }
-				: { ref, relocatedPath, presentPath, disposition: 'changed', currentHash },
+				? { ref, relocatedPath, presentPath: relocatedPath, disposition: 'unchanged' }
+				: { ref, relocatedPath, presentPath: relocatedPath, disposition: 'changed', currentHash },
 		);
 	}
 	return out;
@@ -259,7 +281,7 @@ async function fileSize(app: App, path: string): Promise<number | null> {
 	}
 }
 
-async function hashPath(app: App, path: string): Promise<string> {
+async function hashAttachment(app: App, path: string): Promise<string> {
 	return hashAttachmentBytes(await app.vault.adapter.readBinary(path));
 }
 
@@ -310,9 +332,10 @@ export type AttachmentConflictMode =
  *
  * Missing attachments are always recreated, at the already-resolved `relocatedPath`. A
  * changed file is left alone under `skip`, and unconditionally overwritten under
- * `replace` — `isRecoverable` no longer gates that decision, it only sorts the result
+ * `replace` — recoverability no longer gates that decision, it only sorts the result
  * into `replacedAndRecoverable` vs. `replacedAndNotRecoverable` for the caller to
- * report honestly afterward.
+ * report honestly afterward. `manifest` is the caller's already-loaded copy, reused
+ * here for that check rather than re-fetched from `store`.
  */
 export async function restoreAttachments(
 	app: App,
@@ -320,36 +343,46 @@ export async function restoreAttachments(
 	noteId: string,
 	attachmentChanges: AttachmentChange[],
 	mode: AttachmentConflictMode,
-	isRecoverable: (currentHash: string) => boolean,
+	manifest: NoteManifest,
 ): Promise<AttachmentRestoreResult> {
 	const result: AttachmentRestoreResult = { recreated: 0, replacedAndRecoverable: [], replacedAndNotRecoverable: [], skipped: [], assumedUnchanged: [] };
 
 	for (const entry of attachmentChanges) {
+		// Sanity check — `AttachmentChange`'s own type excludes 'unchanged', so this
+		// should never fire. Defensive only: skip rather than mishandle it as some
+		// other disposition.
+		if ((entry.disposition as Disposition) === 'unchanged') continue;
+
+		// Case 1: missing — recreate from the snapshot's stored bytes.
 		if (entry.disposition === 'missing') {
 			const data = await store.readAttachment(noteId, entry.ref.hash);
 			if (data === null) continue;
 			await ensureVaultFolder(app, entry.relocatedPath);
-			await writeAttachmentBytes(app, entry.relocatedPath, data);
+			await writeAttachmentToVaultPath(app, entry.relocatedPath, data);
 			result.recreated++;
 			continue;
 		}
 
+		// Case 2: too large to have been compared — leave it, and say so.
 		if (entry.disposition === 'assumedUnchanged') {
 			result.assumedUnchanged.push(entry.name);
 			continue;
 		}
 
+		// Case 3: changed, but this restore's mode leaves changed files alone.
 		if (mode === 'skip') {
 			result.skipped.push(entry.name);
 			continue;
 		}
+
+		// Case 4: changed, and mode allows overwriting — replace it in place.
 		const data = await store.readAttachment(noteId, entry.ref.hash);
 		if (data === null) {
 			result.skipped.push(entry.name);
 			continue;
 		}
-		await writeAttachmentBytes(app, entry.presentPath!, data);
-		if (isRecoverable(entry.currentHash!)) {
+		await writeAttachmentToVaultPath(app, entry.presentPath!, data);
+		if (hasSnapshotWithAttachment(manifest, entry.currentHash!)) {
 			result.replacedAndRecoverable.push({ name: entry.name, previousHash: entry.currentHash! });
 		} else {
 			result.replacedAndNotRecoverable.push(entry.name);
@@ -367,7 +400,7 @@ export async function restoreAttachments(
  * The adapter fallback covers a path Obsidian has no `TFile` for yet — a
  * just-recreated file, or the test harness.
  */
-async function writeAttachmentBytes(app: App, path: string, data: ArrayBuffer): Promise<void> {
+async function writeAttachmentToVaultPath(app: App, path: string, data: ArrayBuffer): Promise<void> {
 	const existing = app.vault.getAbstractFileByPath(normalizePath(path));
 	if (existing instanceof TFile) {
 		await app.vault.modifyBinary(existing, data);

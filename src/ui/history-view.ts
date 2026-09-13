@@ -229,7 +229,7 @@ export class HistoryView extends ItemView {
 		if (!this.file) return;
 		const stored = await this.loadContent(row);
 		if (stored === null) return;
-		const current = await this.plugin.readContent(this.file);
+		const current = await this.plugin.readNoteContent(this.file);
 		new DiffModal(this.app, `V${row.n} → current`, stored, current).open();
 	}
 

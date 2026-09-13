@@ -11,7 +11,7 @@ const NOTE_ID_KEY = 'ns-id';
  * The metadata cache lags behind external writes (sync, git checkout), and the
  * move-versus-copy test in `identity.ts` must not misclassify on stale data.
  */
-export async function readNoteId(app: App, file: TFile): Promise<string | null> {
+export async function readNoteIdFromFrontmatter(app: App, file: TFile): Promise<string | null> {
 	const cached = normaliseId(rawIdFromCache(app, file));
 	if (cached) return cached;
 	try {
@@ -23,7 +23,7 @@ export async function readNoteId(app: App, file: TFile): Promise<string | null> 
 }
 
 /** Writes (or overwrites) the id in the note's frontmatter, creating the block if needed. */
-export async function writeNoteId(app: App, file: TFile, noteId: string): Promise<void> {
+export async function writeNoteIdToFrontmatter(app: App, file: TFile, noteId: string): Promise<void> {
 	await app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
 		frontmatter[NOTE_ID_KEY] = noteId;
 	});

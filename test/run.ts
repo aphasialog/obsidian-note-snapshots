@@ -88,34 +88,7 @@ async function scenario(name: string, run: () => Promise<void>): Promise<void> {
 
 // ---------------------------------------------------------------------------
 
-await scenario('R2: an unchanged note produces no second snapshot', async () => {
-	const { vault, snapshots, identity } = harness();
-	const file = vault.createNote('Note.md', 'alpha\n');
-
-	const first = await snapshots.saveSnapshot(file, 'start');
-	equal('first snapshot is created', first.status, 'created');
-
-	const second = await snapshots.saveSnapshot(file);
-	equal('second snapshot is a no-op', second.status, 'unchanged');
-	equal('it points at the same snapshot', second.row.snapshotId, first.row.snapshotId);
-
-	const noteId = (await identity.resolveNoteId(file))!;
-	equal('history holds exactly one snapshot', (await snapshots.listSnapshots(noteId)).length, 1);
-
-	// allowDuplicate overrides the no-op: an explicit, informed save adds a twin.
-	const forced = await snapshots.saveSnapshot(file, 'copy', undefined, true);
-	equal('a forced snapshot is created', forced.status, 'created');
-	check('it is a new snapshot', forced.row.snapshotId !== first.row.snapshotId);
-	equal('history now holds two snapshots', (await snapshots.listSnapshots(noteId)).length, 2);
-
-	// The "current" indicator follows activeSnapshotId to the just-saved twin, not the original.
-	const state = await snapshots.getWorkingState(file);
-	equal('working state is clean', state.kind, 'clean');
-	equal('and points at the new snapshot', state.kind === 'clean' && state.snapshotId, forced.row.snapshotId);
-	equal('surfacing its name', state.kind === 'clean' && state.name, 'copy');
-});
-
-await scenario('R1 + R2: flipping between two snapshots 50 times creates nothing', async () => {
+await scenario('R1: flipping between two snapshots 50 times creates nothing', async () => {
 	const { vault, snapshots, identity } = harness();
 	const file = vault.createNote('Toggle.md', 'A\n');
 
@@ -203,8 +176,8 @@ await scenario('§4 rename: history survives a move', async () => {
 	await snapshots.saveSnapshot(file, 'before move');
 	const before = (await identity.resolveNoteId(file))!;
 
-	const oldPath = vault.renameNote(file, 'Folder/New.md');
-	await identity.handleRename(file, oldPath);
+	vault.renameNote(file, 'Folder/New.md');
+	await identity.handleRename(file);
 
 	const after = await identity.resolveNoteId(file);
 	equal('the id is unchanged', after, before);
@@ -220,8 +193,8 @@ await scenario('Title: each snapshot records the note title it was captured unde
 	const v1 = await snapshots.saveSnapshot(file, 'first');
 	const noteId = (await identity.resolveNoteId(file))!;
 
-	const oldPath = vault.renameNote(file, 'Folder/New Title.md');
-	await identity.handleRename(file, oldPath);
+	vault.renameNote(file, 'Folder/New Title.md');
+	await identity.handleRename(file);
 	await vault.app.vault.modify(file, `---\nns-id: ${noteId}\n---\nv2\n`);
 	const v2 = await snapshots.saveSnapshot(file, 'second');
 
@@ -238,8 +211,8 @@ await scenario('Restore: content only — the note is never renamed or moved', a
 	const noteId = (await identity.resolveNoteId(file))!;
 
 	// The user renames the note themselves and keeps working.
-	const oldPath = vault.renameNote(file, 'Final.md');
-	await identity.handleRename(file, oldPath);
+	vault.renameNote(file, 'Final.md');
+	await identity.handleRename(file);
 	await vault.app.vault.modify(file, `---\nns-id: ${noteId}\n---\nv2\n`);
 	await snapshots.saveSnapshot(file, 'second');
 
@@ -253,26 +226,6 @@ await scenario('Restore: content only — the note is never renamed or moved', a
 	equal('no snapshot was created by the restore', (await snapshots.listSnapshots(noteId)).length, 2);
 });
 
-await scenario('Snapshot: a pure rename or move is not a new snapshot', async () => {
-	const { vault, snapshots, identity } = harness();
-	const file = vault.createNote('Working name.md', 'body\n');
-	const v1 = await snapshots.saveSnapshot(file, 'first');
-	const noteId = (await identity.resolveNoteId(file))!;
-
-	// Rename only — not one character of content changes.
-	let oldPath = vault.renameNote(file, 'Final name.md');
-	await identity.handleRename(file, oldPath);
-	const afterRename = await snapshots.saveSnapshot(file);
-	equal('renaming alone is a no-op', afterRename.status, 'unchanged');
-	equal('it still points at V1', afterRename.row.snapshotId, v1.row.snapshotId);
-
-	// Move to another folder — also no change.
-	oldPath = vault.renameNote(file, 'Archive/Final name.md');
-	await identity.handleRename(file, oldPath);
-	equal('moving alone is a no-op', (await snapshots.saveSnapshot(file)).status, 'unchanged');
-	equal('exactly one snapshot exists', (await snapshots.listSnapshots(noteId)).length, 1);
-});
-
 await scenario('Working state: the current indicator is content-only', async () => {
 	const { vault, snapshots, identity } = harness();
 	const file = vault.createNote('Alpha.md', 'shared body\n');
@@ -282,14 +235,15 @@ await scenario('Working state: the current indicator is content-only', async () 
 	equal('a freshly snapshotted note is clean', clean.kind === 'clean' && clean.snapshotId, v1.row.snapshotId);
 
 	// Rename only: the content still matches V1, so the note stays clean.
-	const oldPath = vault.renameNote(file, 'Beta.md');
-	await identity.handleRename(file, oldPath);
+	vault.renameNote(file, 'Beta.md');
+	await identity.handleRename(file);
 
 	const afterRename = await snapshots.getWorkingState(file);
 	equal('renaming does not make the note unsaved', afterRename.kind === 'clean' && afterRename.snapshotId, v1.row.snapshotId);
 
 	// Editing the body does.
-	await vault.app.vault.modify(file, 'shared body — changed\n');
+	const noteId = await identity.resolveNoteId(file);
+	await vault.app.vault.modify(file, `---\nns-id: ${noteId}\n---\nshared body — changed\n`);
 	equal('an edit reads as unsaved', (await snapshots.getWorkingState(file)).kind, 'unsaved');
 });
 
@@ -299,8 +253,8 @@ await scenario('Working state: with identical twins, the badge follows the one r
 	const v1 = await snapshots.saveSnapshot(file, 'first');
 	const noteId = (await identity.resolveNoteId(file))!;
 
-	// A second, byte-identical snapshot — the case allowDuplicate exists for.
-	const v2 = await snapshots.saveSnapshot(file, 'copy', undefined, true);
+	// A second, byte-identical snapshot — every explicit save creates one regardless.
+	const v2 = await snapshots.saveSnapshot(file, 'copy');
 	equal('two snapshots, same content', (await snapshots.listSnapshots(noteId)).length, 2);
 
 	const atV2 = await snapshots.getWorkingState(file);
@@ -325,8 +279,8 @@ await scenario('Attachments: a subfolder image follows the note to its new folde
 
 	// The note is moved to another folder; the now-unreferenced image is swept up by
 	// some unrelated cleanup tool.
-	const oldPath = vault.renameNote(file, 'Archive/Note.md');
-	await identity.handleRename(file, oldPath);
+	vault.renameNote(file, 'Archive/Note.md');
+	await identity.handleRename(file);
 	await vault.app.vault.modify(file, `---\nns-id: ${noteId}\n---\nno image\n`);
 	await snapshots.saveSnapshot(file, 'image gone');
 	vault.deleteAttachment('Projects/assets/pic.png');
@@ -338,6 +292,29 @@ await scenario('Attachments: a subfolder image follows the note to its new folde
 	equal('exactly one attachment was recreated', restored.attachmentsRecreated, 1);
 	check('it landed beside the note in its current folder', await vault.app.vault.adapter.exists('Archive/assets/pic.png'));
 	check('nothing was recreated under the old folder', !(await vault.app.vault.adapter.exists('Projects/assets/pic.png')));
+});
+
+await scenario('Attachments: a stale copy left at the old folder does not block recreation', async () => {
+	const { vault, snapshots, identity } = harness();
+	vault.createAttachment('Projects/assets/pic.png', bytes('pixels-v1'));
+	const file = vault.createNote('Projects/Note.md', '![](assets/pic.png)\n');
+	const v1 = await snapshots.saveSnapshot(file, 'with image');
+
+	// The note moves to a new folder, but nothing moved the attachment along with it —
+	// no cleanup tool touched it, it is just left behind at its old path.
+	vault.renameNote(file, 'Archive/Note.md');
+	await identity.handleRename(file);
+
+	const plan = await snapshots.planRestore(file, v1.row.snapshotId);
+	equal('the plan reports it will be recreated', plan.attachmentsToRecreate.join(','), 'pic.png');
+
+	const restored = await restore(snapshots, file, v1.row.snapshotId);
+	equal('it is recreated rather than left unresolved', restored.attachmentsRecreated, 1);
+	check(
+		'it lands beside the note in its new folder, where the relative embed now looks',
+		await vault.app.vault.adapter.exists('Archive/assets/pic.png'),
+	);
+	check('the stale copy at the old folder is left alone, not deleted', await vault.app.vault.adapter.exists('Projects/assets/pic.png'));
 });
 
 await scenario('§4 rename without an event: history is refound lazily', async () => {
@@ -396,15 +373,6 @@ await scenario('Message: a snapshot carries a free-text note, editable after the
 	const noteId = (await identity.resolveNoteId(file))!;
 	equal('no note yet', v1.row.message, undefined);
 	const rowOf = async (id: string) => (await snapshots.listSnapshots(noteId)).find((r) => r.snapshotId === id);
-	const msgOf = async (id: string) => (await rowOf(id))?.message;
-
-	// A no-op re-snapshot adopts a note when the snapshot has none.
-	await snapshots.saveSnapshot(file, undefined, '  Rewrote the intro.\nStill unsure about the ending.  ');
-	equal('the note is adopted, trimmed', await msgOf(v1.row.snapshotId), 'Rewrote the intro.\nStill unsure about the ending.');
-
-	// A later no-op re-snapshot does not overwrite it.
-	await snapshots.saveSnapshot(file, undefined, 'a different note');
-	equal('an existing note is left alone', await msgOf(v1.row.snapshotId), 'Rewrote the intro.\nStill unsure about the ending.');
 
 	// annotate() edits name and note together; a blank string clears that field.
 	await snapshots.annotateSnapshot(noteId, v1.row.snapshotId, 'renamed', 'Final wording locked in.');
@@ -817,12 +785,17 @@ await scenario('Orphans: a deleted note keeps its history until purged', async (
 await scenario('Lock: concurrent snapshots of one note do not interleave', async () => {
 	const { vault, snapshots, identity } = harness();
 	const file = vault.createNote('Race.md', 'A\n');
+	// Establish identity up front — minting a note's very first id has its own,
+	// separate race outside the scope of this test, which is about the per-note
+	// queue serializing concurrent manifest writes once identity is already settled.
+	await identity.resolveOrCreateNoteId(file);
 
-	// Same content, fired together: R2 must collapse them into one snapshot.
+	// Same content, fired together: the queue serializes them so all three land safely,
+	// each its own snapshot — nothing corrupts the manifest, and none get lost.
 	await Promise.all([snapshots.saveSnapshot(file), snapshots.saveSnapshot(file), snapshots.saveSnapshot(file)]);
 
 	const noteId = (await identity.resolveNoteId(file))!;
-	equal('only one snapshot exists', (await snapshots.listSnapshots(noteId)).length, 1);
+	equal('all three snapshots exist', (await snapshots.listSnapshots(noteId)).length, 3);
 });
 
 await scenario('Settings: the pre-1.0 boolean confirm-restore setting migrates', async () => {

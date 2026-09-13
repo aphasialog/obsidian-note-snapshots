@@ -45,12 +45,6 @@ Trace with `V1` holding content *A*, `V2` holding content *B*, file currently at
 
 1. **Restoring never creates a snapshot.** It writes the stored content to the file and moves a pointer.
    Toggling between snapshots is free, forever.
-2. **Every snapshot records a content hash.** A snapshot is a no-op if that content already exists *anywhere* in
-   the note's history, not just at the tip — the gap left by comparing only against the latest version (§1).
-   Renaming or moving a note is not by itself a change — only the bytes are compared. The interactive
-   *Save snapshot* dialog shows which snapshot the note already matches; every user-invoked save then records
-   one anyway (`allowDuplicate`), identical or not, so an explicit request is never silently dropped. Only
-   restore's automatic backup (R4) keeps the no-op, firing when the working content matches no stored snapshot.
 3. **The note manifest carries `head`** — the snapshot id the working file currently matches. It drives the
    "current" marker in the list, and makes "is there unsaved work?" a hash comparison rather than a guess.
 4. **One auto-snapshot, one condition.** Restore backs up the working file only when its hash matches *no*
@@ -84,9 +78,8 @@ checkout: it never renames or moves the note, and the no-op check never compares
   has no `renamedTo` / `renameBlockedBy` outcome — a restore that would have changed the note's name or folder
   under the old design is now just a content write, and the confirmation prompt follows `confirmRestore` with no
   override.
-- Snapshot dedup (R2) and the "current" indicator (R3) compare **content only**. Renaming or moving a note
-  produces no snapshot on its own; the same bytes are the same snapshot wherever the file sits. `findByContent`
-  takes no predicate.
+- The "current" indicator (R3) compares **content only**, ignoring path — the same bytes still read as the same
+  snapshot wherever the file sits. `findByContent` takes no predicate.
 - Identity is still the `ns-id`, never the path — a manual rename is handled by `Identity.handleRename` exactly
   as before, and the stored `path` is repaired lazily for display.
 
@@ -151,8 +144,10 @@ often by an unrelated "find orphaned files" cleanup — brings the image back to
   leading-slash link points at (the resolver's root/relative fallback strips the leading slash at capture). The
   gaps: a relative embed that escapes the note's folder, and an absolute-in-vault embed whose target was under
   it. See the README's "When attachment recovery falls short".
-- A guard skips recreation when the attachment is still present at *either* the relocated home or its recorded
-  path, so a stale copy left behind by a move cannot spawn a duplicate basename that Obsidian then picks up.
+- Presence is judged only at the relocated home, never the old recorded path. A stale copy left behind by a move
+  is not treated as present — recreating at the relocated home can leave a duplicate basename behind, but that is
+  a stray file the user can delete; leaving a relative embed silently unresolved is worse, and recoverable only by
+  digging into the snapshot store by hand.
 - Missing ancestor folders are created; a hash with no stored blob is skipped rather than treated as fatal,
   so a partial backup degrades instead of aborting the restore.
 
@@ -199,7 +194,7 @@ in `central.json` is a derived convenience — used for display and orphan detec
 | Rename outside Obsidian (git, Dropbox, `mv`) | No event fires. `ns-id` travels inside the file, so history is found the next time the note is opened; `central.json` self-heals then | lazy, zero-touch |
 | Folder rename | Child paths change without per-file events in some cases; identity is unaffected, only the path cache goes stale | self-heals on next open |
 | Copy / duplicate a note | Two files now claim one `ns-id` — **must fork**, see below | new id for the copy |
-| Change extension (`.md` → `.txt`) | Obsidian stops parsing frontmatter, so `ns-id` becomes unreadable | falls back to path lookup |
+| Change extension (`.md` → `.txt`) | `resolveNoteId` treats non-`.md` files as untracked; the `ns-id` bytes are untouched | untracked while renamed; resolves again once renamed back to `.md` |
 | Annotate a *snapshot* | `name` / `message` fields in `manifest.json`; no content, no id, no file touched | metadata write |
 
 ### The move-vs-copy discrimination
@@ -276,6 +271,7 @@ explicit action.
 | **Note identity** | frontmatter `ns-id` / path-keyed manifest | **frontmatter**, written lazily. Path keys silently orphan history when a note is renamed outside Obsidian. |
 | **Auto-snapshot** | none / debounced on save / interval | **none.** Intentional snapshots are the feature — the plugin doesn't decide on the user's behalf when their work is worth keeping. |
 | **Retention** | unlimited / cap per note | **unlimited, no automatic cap.** Same reasoning as auto-snapshot: this plugin is about intentional operations, so it doesn't decide for the user which of their own snapshots to discard. The user manages history by hand — lock a snapshot to protect it, delete one, or clear every unlocked snapshot at once. |
+| **Duplicate content on explicit save** | no-op if unchanged / always create | **always create.** A *Save snapshot* click is already the user's explicit request, so there is nothing to decide — it is simply honored. The dialog can still note that the content matches an existing snapshot, but only for the user's information; it never blocks or redirects the save. |
 | **Storage folder** | `.note-snapshots` / visible `note-snapshots` | **`.note-snapshots`** — hidden from file explorer and search. Caveat below. |
 | **A copied note** | fork with empty history / fork and clone the history / share one history | **fork, empty history.** Cloning duplicates every snapshot on disk for a note the user may not care about; sharing would let two independent files silently write into the same history. Forking is recoverable — the original still has everything. |
 
@@ -298,11 +294,11 @@ explicit action.
   mode overwrites a changed attachment unconditionally once chosen — the caller is trusted to have already shown
   the user which ones are at risk, via `plan.attachmentsToOverwriteAndUncaptured`, the same trust `dropUnsavedWork`
   already gets. Recoverability only decides how the outcome is *reported* afterward (replaced-and-recoverable vs.
-  gone for good), so `executeRestore` re-derives it live specifically when `backupAndRestoreSnapshot`'s own forced
-  backup could have made a hash newly captured within the very call in progress — getting that stale would only
-  mislabel the notice, never cause a wrong overwrite. The only realistic way for `attachmentChanges` itself to go
-  stale between plan and commit is another device syncing changes in behind it — an edge case treated as the
-  user's own responsibility to manage, not something this plugin defends against.
+  gone for good), and checking it is a pure in-memory scan over the manifest already loaded for the restore — cheap
+  enough that `executeRestorePlan` always re-derives it live rather than trust a hash set computed back at plan
+  time. The only realistic way for `attachmentChanges` itself to go stale between plan and commit is another device
+  syncing changes in behind it — an edge case treated as the user's own responsibility to manage, not something
+  this plugin defends against.
 
 ## 9. Why folder operations are not supported
 

@@ -12,7 +12,7 @@ export class Paths {
 		return normalizePath(raw.length > 0 ? raw : '.note-snapshots');
 	}
 
-	centralJson(): string {
+	centralManifest(): string {
 		return `${this.root()}/central.json`;
 	}
 
@@ -21,7 +21,7 @@ export class Paths {
 		return `${this.root()}/${noteId}`;
 	}
 
-	noteJson(noteId: string): string {
+	noteManifest(noteId: string): string {
 		return `${this.noteDir(noteId)}/manifest.json`;
 	}
 

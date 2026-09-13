@@ -49,7 +49,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 			this.store,
 			this.identity,
 			this.queue,
-			(file) => this.readContent(file),
+			(file) => this.readNoteContent(file),
 		);
 
 		this.registerView(VIEW_TYPE_HISTORY, (leaf: WorkspaceLeaf) => new HistoryView(leaf, this));
@@ -113,10 +113,10 @@ export default class NoteSnapshotsPlugin extends Plugin {
 
 	private registerVaultEvents(): void {
 		this.registerEvent(
-			this.app.vault.on('rename', (file, oldPath) => {
+			this.app.vault.on('rename', (file) => {
 				if (!(file instanceof TFile) || this.paths.isInternal(file.path)) return;
 				void this.identity
-					.handleRename(file, oldPath)
+					.handleRename(file)
 					.catch((error: unknown) => console.error('Note Snapshots: rename failed.', error))
 					.finally(() => this.refreshViews());
 			}),
@@ -158,7 +158,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 	 * second or two after the last keystroke. Snapshotting straight after typing would
 	 * otherwise silently miss the most recent edits, so an open editor wins.
 	 */
-	async readContent(file: TFile): Promise<string> {
+	async readNoteContent(file: TFile): Promise<string> {
 		for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
 			const view = leaf.view;
 			if (view instanceof MarkdownView && view.file?.path === file.path) {
@@ -195,8 +195,9 @@ export default class NoteSnapshotsPlugin extends Plugin {
 		// Only the name is prefilled — the user still confirms explicitly, so a
 		// snapshot is never created without their say-so.
 		const suggestion = suggestedSnapshotName(this.settings, { note: file.basename });
-		// If the note already matches a stored snapshot, say so — the user can still
-		// save an identical snapshot from here, they just do it knowingly.
+		// If the note's text already matches a stored snapshot, say so — the user can
+		// still save an identical snapshot from here, they just do it knowingly. Text
+		// only: an attachment-only change still reads as a match here.
 		const working = await this.getWorkingStateOrNull(file);
 		const duplicateOf = working?.kind === 'clean' ? formatSnapshotLabel(working.n, working.name) : null;
 		const entered = await new Promise<{ name: string; message: string } | null>((resolve) =>
@@ -208,7 +209,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 					namePlaceholder: 'Optional name, e.g. before rewrite',
 					...(suggestion ? { initialName: suggestion } : {}),
 					...(duplicateOf
-						? { notice: `This note is identical to ${duplicateOf}. Saving adds another copy of it.` }
+						? { notice: `The note text is identical to ${duplicateOf}.` }
 						: {}),
 				},
 				resolve,
@@ -228,7 +229,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 	async snapshotFile(file: TFile | null, name?: string, message?: string): Promise<void> {
 		if (!this.requireFile(file)) return;
 		try {
-			const { row } = await this.snapshots.saveSnapshot(file, name, message, true);
+			const { row } = await this.snapshots.saveSnapshot(file, name, message);
 			new Notice(`Saved ${formatSnapshotLabel(row.n, row.name)}.`);
 			this.refreshViews();
 		} catch (error) {
@@ -332,7 +333,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 		// 2. Details: exactly what restoring would overwrite, plus each attachment's path
 		// so it can be checked before deciding.
 		const overwritten: string[] = [];
-		if (bodyUnsaved) overwritten.push('the note');
+		if (bodyUnsaved) overwritten.push('the note text');
 		overwritten.push(changedAttachments.length === 1 ? 'the following attachment:' : 'the following attachments:');
 		body.push(`This restore will overwrite ${overwritten.join(' and ')}`);
 		const list = changedAttachments.map((change) => change.presentPath!);
