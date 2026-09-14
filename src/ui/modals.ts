@@ -262,8 +262,7 @@ export class DiffModal extends Modal {
 /** Builds one `<div>` row: two line-number gutters, a marker, then the diffed text. */
 function buildRowEl(row: DiffRow): HTMLDivElement {
 	const kind = row.kind;
-	const el = document.createElement('div');
-	el.className = `ns-diff-line ns-diff-${kind}`;
+	const el = createDiv({ cls: `ns-diff-line ns-diff-${kind}` });
 
 	const oldGutter = el.createDiv({ cls: 'ns-diff-gutter' });
 	oldGutter.setText(row.oldNumber === null ? '' : String(row.oldNumber));

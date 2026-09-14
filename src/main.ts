@@ -415,7 +415,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 			const view = leaf.view;
 			if (!(view instanceof MarkdownView) || view.file?.path !== file.path) continue;
 			const state = leaf.getViewState();
-			const eState = leaf.getEphemeralState();
+			const eState = leaf.getEphemeralState() as unknown;
 			void leaf.setViewState({ type: 'empty' }).then(() => leaf.setViewState(state, eState));
 		}
 	}

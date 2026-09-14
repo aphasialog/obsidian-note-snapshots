@@ -148,7 +148,7 @@ export class Store {
 			if (!(await this.app.vault.adapter.exists(path))) return null;
 			const raw = await this.app.vault.adapter.read(path);
 			const parsed: unknown = JSON.parse(raw);
-			return typeof parsed === 'object' && parsed !== null ? (parsed as Partial<T>) : null;
+			return typeof parsed === 'object' && parsed !== null ? parsed : null;
 		} catch (error) {
 			console.error(`Note Snapshots: could not read ${path}. Treating as missing.`, error);
 			return null;
