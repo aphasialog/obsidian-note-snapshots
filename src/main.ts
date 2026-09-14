@@ -395,21 +395,28 @@ export default class NoteSnapshotsPlugin extends Plugin {
 	 *
 	 * An image embed renders once to an `app://…/pic.png?<mtime>` URL and is not
 	 * re-resolved while the pane stays open, so overwriting the file on disk leaves the
-	 * stale picture on screen until the note is closed and reopened. Rebuilding the view
-	 * is that reopen, done for the user: it tears the view down and reloads it from
-	 * disk, so the embed is resolved afresh against the new bytes. Obsidian restores the
-	 * cursor and scroll position as part of the rebuild.
+	 * stale picture on screen until the note is closed and reopened. `setViewState`
+	 * with the leaf's own current state is a no-op — Obsidian sees the same view type
+	 * and file and reuses the live view instance instead of rebuilding it. Swapping to
+	 * the (harmless, built-in) `empty` view type first forces that reuse path to miss:
+	 * the leaf tears the markdown view down, and switching back re-creates it from disk,
+	 * so the embed is resolved afresh against the new bytes. `eState` carries the
+	 * cursor/scroll position across the round trip. Covers Reading and Live Preview
+	 * alike, since it rebuilds the pane itself rather than asking a specific render mode
+	 * to redraw.
 	 *
-	 * `rebuildView` is not in the public API; fall back to re-rendering the read view
-	 * (which covers Reading mode, the common case for a note whose attachment changed).
+	 * Fixes this on desktop. On mobile it does not — `CapacitorAdapter.getResourcePath`
+	 * has no cache-busting suffix, so the freshly rebuilt pane requests the exact same
+	 * URL as before and the webview serves it from cache regardless. That is a platform
+	 * limitation outside what a rebuild can reach; see the README's Limitations section.
 	 */
 	private reloadEmbeds(file: TFile): void {
 		for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
 			const view = leaf.view;
 			if (!(view instanceof MarkdownView) || view.file?.path !== file.path) continue;
-			const rebuild = (leaf as unknown as { rebuildView?: () => void }).rebuildView;
-			if (typeof rebuild === 'function') rebuild.call(leaf);
-			else view.previewMode.rerender(true);
+			const state = leaf.getViewState();
+			const eState = leaf.getEphemeralState();
+			void leaf.setViewState({ type: 'empty' }).then(() => leaf.setViewState(state, eState));
 		}
 	}
 

@@ -290,8 +290,12 @@ explicit action.
 
 - **Dot-folders and third-party sync.** Obsidian Sync handles `.note-snapshots`, but some Git/Drive setups skip
   dotfolders by default — history would silently not replicate. Mitigation: make the path a setting, document it.
-- **Hashing on mobile.** `crypto.subtle` needs a secure context; if it is unavailable in the mobile webview,
-  fall back to a small pure-JS hash. Decide by measuring, not assuming.
+- **Hashing on mobile.** `crypto.subtle` needs a secure context, which not every mobile webview may grant, and
+  unlike desktop there is no Node `crypto` to fall back to. Resolved: `hashNoteContent`/`hashAttachmentBytes`
+  (`util/hash.ts`) fall back to a fast, non-cryptographic hash when `crypto.subtle` is unavailable or throws.
+  Safe because nothing trusts a hash match on its own — `algorithmsDiffer` keeps a hash from one algorithm from
+  being wrongly compared against the other, and every eventual match is still confirmed against the actual
+  stored content before it's acted on.
 - **Frontmatter writes.** A malformed YAML block makes the `ns-id` write fail. There is no
   YAML-specific handling for this — the rejection propagates up to the top-level command
   handler's generic catch, which surfaces a "Could not save a snapshot" notice. Untested.

@@ -6,12 +6,10 @@ Built around one idea: **keep a meaningful snapshot history**.
 
 > **Important notes:**
 >
-> - Tested against a sandbox vault, which can't cover every scenario; mobile in
->   particular is untested.
-> - The plugin has known limitations; see [Limitations](#limitations) for the cases
+> - Tested against a sandbox vault on both desktop and mobile, but can't cover every scenario.
+> - The plugin has known [limitations](#limitations), worth a look for the cases
 >   it can't fully handle.
-> - It was written to address problems I hit in my own use, so maintenance and
->   support are best-effort.
+> - No feature changes are planned — this was written to solve my own problems. Bugs and Obsidian-version breaks will be fixed.
 
 ## Features
 
@@ -49,8 +47,8 @@ This writes `dist/note-snapshots/`. Copy that folder into
 `<vault>/.obsidian/plugins/`, then enable **Note Snapshots** under
 **Settings → Community plugins**.
 
-Requires Obsidian 1.5.0 or newer. Works on desktop; mobile is untested (see the note
-at the top).
+Requires Obsidian 1.5.0 or newer. Works on desktop and mobile — see the mobile
+picture-refresh lag under [Limitations](#limitations).
 
 ## Usage
 
@@ -224,6 +222,13 @@ it.
   missing attachment behind. See
   [When attachment recovery falls short](#when-attachment-recovery-falls-short)
   for exactly when.
+- **On mobile, a restored picture can keep showing the old version.** The restore
+  itself is correct — this is a display lag. Obsidian mobile's resource URLs don't
+  change when a file's content does (unlike desktop, where the URL carries the file's
+  modified time), so the webview keeps serving the cached image until the app is fully
+  closed and reopened. This is an
+  [Obsidian mobile limitation](https://forum.obsidian.md/t/cache-not-updated-after-image-modification/83112),
+  not something the plugin can fix from within a note.
 
 ## Out of scope
 
