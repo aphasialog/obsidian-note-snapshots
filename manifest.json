@@ -1,7 +1,7 @@
 {
   "id": "note-snapshots",
   "name": "Note Snapshots",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "minAppVersion": "1.10.0",
   "description": "Per-note version control with meaningful history. Save snapshots with names, diffs, and all attachments.",
   "author": "Aphasia",
