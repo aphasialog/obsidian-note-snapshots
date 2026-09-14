@@ -2,53 +2,33 @@
 
 Another per-note version-control plugin for Obsidian.
 
+Built around one idea: **keep a meaningful snapshot history**.
+
 > **Important notes:**
 >
-> - The codebase is largely vibe-coded with Claude, but I've reviewed it thoroughly.
-> - I've tested it against a sandbox vault, but that can't cover every situation.
->   Keep independent backups.
-> - Mobile is untested — use it there at your own risk.
+> - Tested against a sandbox vault, which can't cover every scenario; mobile in
+>   particular is untested.
+> - The plugin has known limitations; see [Limitations](#limitations) for the cases
+>   it can't fully handle.
 > - It was written to address problems I hit in my own use, so maintenance and
 >   support are best-effort.
 
-## Motivation
-
-Obsidian has several per-file version-control plugins. This one is built around a single
-idea: **keep a meaningful snapshot history.** Two properties follow from it:
-
-- **Navigating snapshots never grows the history.** Restoring writes the stored content
-  back and moves a snapshot pointer — nothing new is added. Start with V1 and V2, switch
-  between them fifty times, and you still have two snapshots — short enough to read at
-  a glance.
-- **A snapshot keeps the note's attachments.** It stores the note text and the
-  attachments it embeds, so a restore brings the whole note back. If V1 embeds an
-  image that a later snapshot V2 drops, and an attachment-cleanup plugin such as
-  [File Cleaner](https://github.com/johnsonhong997/obsidian-file-cleaner) removes
-  the now-unreferenced attachment, then restoring V1 brings the image back.
-
-In other respects it follows the familiar per-file model: snapshot the notes you care
-about, each with its own history. Folder-wide snapshot and restore are out of scope by
-design (see [Limitations](#limitations)).
-
-The snapshot store is [plain files in the vault](#storage), so history travels with
-whatever already syncs the vault.
-
 ## Features
 
-- **Full control over snapshots.** Take a snapshot whenever you want, each with an optional
-  short name and a free-text note. There is no background autosave — the plugin flags
-  unsaved work before a restore, and you decide whether to keep it (see
-  [How unsaved work is detected](#how-unsaved-work-is-detected)).
-- **Restoring never adds to the history.** It writes the stored content back and moves
-  a snapshot pointer, so you can switch between snapshots as often as you like (see
-  [How a snapshot is restored](#how-a-snapshot-is-restored)).
-- **Embedded attachments** (`![[image.png]]`, `![](assets/diagram.svg)`) are backed up
-  with the snapshot: recreated on restore if they have gone missing, and — with a
-  prompt — put back if they were changed in place (see
-  [how a snapshot is restored](#how-a-snapshot-is-restored) and
-  [when attachment recovery falls short](#when-attachment-recovery-falls-short)).
-- **Locking** pins a snapshot against every deletion path — single and bulk.
+- **Full control over snapshots.** Create or delete a snapshot whenever you want.
+  The plugin never decides on your behalf — there's no background autosave or cleanup.
+- **Navigating snapshot history freely.** Restoring never forces a new snapshot
+  (unsaved work is flagged for your decision), so the history stays short enough to
+  read at a glance no matter how often you switch between snapshots.
+- **A snapshot keeps the note's attachments.** A restore can bring the whole note
+  back, even an attachment that's since gone missing or been changed in place.
+- **Locking** protects a snapshot against deletion.
 - **Diffs** against the current note or the previous snapshot.
+- **Snapshots are plain files in the vault.** They sync with whatever already syncs the
+  vault, and are greppable and recoverable by hand.
+
+Folder-wide snapshot and restore are out of scope by design (see
+[Out of scope](#out-of-scope)).
 
 ## Installation
 
@@ -99,6 +79,32 @@ current note, or double-click it to restore that snapshot.
 | Confirm before restoring           | only when a restore would overwrite unsaved work | `Always` / `Only when a restore would overwrite unsaved work` / `Never`. Attachments modified-in-place are also considered unsaved work. |
 | Confirm before deleting a snapshot | on                                               |                                                                                                                                          |
 
+## Development
+
+The codebase started largely vibe-coded with Claude;
+[docs/implementation-plan.md](docs/implementation-plan.md) records the design
+rationale and where the initial output was simplified and hardened during review.
+
+Requires Node ≥ 20.19.6 and pnpm 10.25.0 (both provided by the dev container).
+
+```bash
+pnpm install
+pnpm dev         # rebuild on change
+pnpm build       # tsc + esbuild production bundle
+pnpm typecheck   # tsc over src and test
+pnpm test        # core checks against an in-memory vault
+```
+
+`pnpm test` runs the core against a stubbed `obsidian` module and an in-memory
+vault, so the invariants above — the no-growth property, copy-vs-move
+discrimination, attachment recovery — are checked without launching Obsidian.
+
+Build output folder: `OBSIDIAN_PLUGIN_DIR` if set, else
+`<OBSIDIAN_VAULT>/.obsidian/plugins/note-snapshots/`, else
+`dist/note-snapshots/`. The folder name comes from `id` in `manifest.json`.
+Pair `OBSIDIAN_VAULT` with `pnpm dev` for a rebuild-into-vault loop; see
+[.devcontainer/devcontainer.json](.devcontainer/devcontainer.json).
+
 ## How it works
 
 ### Storage
@@ -115,22 +121,23 @@ Snapshots are plain files in the vault — syncable, greppable, recoverable by h
 ```
 
 A note's `noteId` is a `ns-id` key written into its frontmatter on the first snapshot.
-Identity is never derived from the path, so renaming `A.md` to `B.md` keeps the
-history — the path in `central.json` is only a display hint, repaired lazily.
+Identity is resolved by that id, not by path, so renaming `A.md` to `B.md` keeps the
+history intact. The `path` recorded in `central.json` is separate bookkeeping: it's
+repaired lazily as the note moves, and used to find a deleted note's history so it
+can be marked orphaned for cleanup.
 
-A note's **snapshot pointer** marks which snapshot its working file currently matches,
-or none. The **`V1`, `V2`, … labels** in the sidebar are display only — sorted by
-capture time.
+A note's **snapshot pointer** marks which snapshot its working file currently
+matches, or none. The **`V1`, `V2`, …** labels in the sidebar are display only —
+sorted by capture time.
 
 ### How unsaved work is detected
 
-"Unsaved work" is content — note text or an embedded attachment — that doesn't match
-any stored snapshot.
+"Unsaved work" means the note text or any embedded attachment is not in stored snapshots.
 
-- **Content only.** Renaming or moving the note does not make it count as unsaved work.
-- **Attachments count too.** One modified in place is treated as unsaved work as well.
+- **Attachment content matters.** One modified in place is treated as unsaved work as well.
+- **Path is not considered at all.** Renaming or moving the note does not make it count as unsaved work.
 
-This does not restrict you: an explicit save always records a snapshot.
+This is only for flagging. You can always save a snapshot.
 
 ### How a snapshot is restored
 
@@ -159,7 +166,7 @@ Embedded attachments in the target snapshot are reconciled alongside the text:
     snapshot may be lost (see [Limitations](#limitations)).
   - **Restore text only** restores only note text.
 
-Whether a still-present attachment has changed is checked by size, then by hash below
+Whether a still-present attachment has changed is checked by size, then by hash if below
 ~25 MB, so a large attachment can be mistakenly judged unchanged (see
 [When attachment recovery falls short](#when-attachment-recovery-falls-short)).
 
@@ -201,44 +208,32 @@ The one exception is an edit to a large attachment (~25 MB or larger) that leave
 the exact same size — restore checks by size alone, takes it for unchanged, and leaves
 it.
 
-## Development
-
-Requires Node ≥ 20.19.6 and pnpm 10.25.0 (both provided by the dev container).
-
-```bash
-pnpm install
-pnpm dev         # rebuild on change
-pnpm build       # tsc + esbuild production bundle
-pnpm typecheck   # tsc over src and test
-pnpm test        # core checks against an in-memory vault
-```
-
-`pnpm test` runs the core against a stubbed `obsidian` module and an in-memory
-vault, so the invariants above — the no-growth property, copy-vs-move
-discrimination, attachment recovery — are checked without launching Obsidian.
-
-Build output folder: `OBSIDIAN_PLUGIN_DIR` if set, else
-`<OBSIDIAN_VAULT>/.obsidian/plugins/note-snapshots/`, else
-`dist/note-snapshots/`. The folder name comes from `id` in `manifest.json`.
-Pair `OBSIDIAN_VAULT` with `pnpm dev` for a rebuild-into-vault loop; see
-[.devcontainer/README.md](.devcontainer/README.md).
-
 ## Limitations
 
-- **Markdown only.** A note's identity lives in its frontmatter, so renaming a note
-  to a non-markdown extension detaches it from its history.
-- **A snapshot is about one note and its embedded attachments.**
-  - Links to other notes (`[[Other note]]`) and embeds of other notes
-    (`![[Other note]]`) are stored as plain text; the plugin never snapshots,
-    restores, or otherwise touches the notes they point at.
-  - The same applies to attachments: keep each one to a single note if you can.
-    Recoverability during restore is judged only from the note being restored, so an
-    attachment embedded by more than one note can be reconciled correctly for the
-    target note while surprising another note that also embeds it.
-  - Version-controlling complex relationships between notes and attachments is out
-    of scope. If you need whole-vault, commit-style history across many files at
-    once, use [obsidian-git](https://github.com/Vinzent03/obsidian-git)
-    instead — or alongside this plugin, for the coarse-grained layer.
+- **Identity lives in a frontmatter field.** A note's history is linked through the
+  `ns-id` key in its frontmatter. Strip or clear that field — a "clear frontmatter"
+  command, a format conversion, manual editing — and the note silently detaches from
+  its history; the next snapshot just starts a new one, with no error.
+- **A shared attachment can surprise another note.** Recoverability during restore
+  is judged only from the note being restored, so an attachment embedded by more
+  than one note can be reconciled correctly for the target note while unexpectedly
+  changing what another note that also embeds it sees. Keep each attachment to a
+  single note if you can.
+- **Attachment recovery is best-effort.** A note moved since the snapshot, or an
+  edit to a large (~25 MB+) attachment that keeps its size, can leave a stale or
+  missing attachment behind. See
+  [When attachment recovery falls short](#when-attachment-recovery-falls-short)
+  for exactly when.
+
+## Out of scope
+
+- **A snapshot is about one note and its embedded attachments.** Links to other
+  notes (`[[Other note]]`) and embeds of other notes (`![[Other note]]`) are stored
+  as plain text; the plugin never snapshots, restores, or otherwise touches the
+  notes they point at. Version-controlling complex relationships between notes and
+  attachments is out of scope. If you need whole-vault, commit-style history across
+  many files at once, use [obsidian-git](https://github.com/Vinzent03/obsidian-git)
+  instead — or alongside this plugin, for the coarse-grained layer.
 
 - **No folder operations, by design.** A folder-wide snapshot could
   only ever be a batch over independent per-file histories:

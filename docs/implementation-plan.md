@@ -153,9 +153,20 @@ often by an unrelated "find orphaned files" cleanup — brings the image back to
 
 Deliberately not done: attachments linked but not embedded are not captured; a restore never *deletes* a file
 the target does not embed, only overwrites a divergent one the user opted into; embeds are matched by exact
-`path` between snapshots (a rename of the attachment reads as remove + add in the row delta). Blobs orphaned by
-a snapshot deletion are garbage-collected by `gcAttachments` on every deletion path (`removeSnapshot`,
-`removeAllSnapshots`) once no surviving snapshot references the hash.
+`path` between snapshots (a rename of the attachment reads as remove + add in the row delta). There is no
+persistent identity for an attachment beyond its note and content hash — `hasSnapshotWithAttachment` checks
+only whether *some* snapshot of *this* note ever recorded that hash, never which path or name it was under.
+Ordinary iteration can still confuse it, not just deliberate misuse: a note embedding `idea.png`, `flow.png`,
+and `result.png` where the images get renamed and swapped a few times between snapshots can leave the plugin
+unable to tell "unsaved" from "already captured" — any past snapshot of this note holding a matching hash
+counts as captured, regardless of which name it was under. This never risks data loss, only the flagging: every
+hash reasoned about is real, and
+an explicit save always records a snapshot regardless of what the automatic check thinks, the same guarantee as
+note text (see the README's "How unsaved work is detected"). Real attachment identity would need tracking
+independent of both path and content — meaningful complexity to fix a flagging nicety, not a correctness bug.
+Blobs orphaned by a snapshot deletion are
+garbage-collected by `gcAttachments` on every deletion path (`removeSnapshot`, `removeAllSnapshots`) once no
+surviving snapshot references the hash.
 
 ## 3. Storage
 
