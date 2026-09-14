@@ -41,7 +41,7 @@
 		// Point OBSIDIAN_VAULT at a vault mounted into the container and the build
 		// installs into <vault>/.obsidian/plugins/<plugin id>/. Use
 		// OBSIDIAN_PLUGIN_DIR instead to name that folder exactly. With both empty,
-		// the build writes dist/<plugin id>/ for you to copy out by hand.
+		// the build writes dist/ (flat) for you to copy out by hand.
 		"OBSIDIAN_VAULT": "",
 		"OBSIDIAN_PLUGIN_DIR": ""
 	},

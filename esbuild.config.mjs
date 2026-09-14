@@ -22,7 +22,9 @@ if (!pluginId) throw new Error('manifest.json is missing an "id".');
  *
  *  - OBSIDIAN_PLUGIN_DIR — an exact plugin folder.
  *  - OBSIDIAN_VAULT      — a vault root; the plugin folder is derived from it.
- *  - otherwise            dist/<id>, a folder to drop into .obsidian/plugins.
+ *  - otherwise            dist/, flat — the location Obsidian's community-plugin build
+ *                          verification looks for (repo root, dist/, or build/); rename
+ *                          it to the manifest id when dropping it into .obsidian/plugins.
  *
  * A relative override is taken relative to the repo root, not the cwd.
  */
@@ -35,7 +37,7 @@ function outputDir() {
     return { dir: join(absolute(vault), '.obsidian', 'plugins', pluginId), installed: true };
   }
 
-  return { dir: join(rootDir, 'dist', pluginId), installed: false };
+  return { dir: join(rootDir, 'dist'), installed: false };
 }
 
 function absolute(path) {
@@ -62,7 +64,7 @@ const copyStatic = {
       const time = new Date().toLocaleTimeString();
       console.log(`[build] ${time} -> ${join(outDir, 'main.js')}`);
       if (!installed) {
-        console.log(`[build] drop ${outDir} into <vault>/.obsidian/plugins/`);
+        console.log(`[build] copy ${outDir} into <vault>/.obsidian/plugins/${pluginId}/`);
       }
     });
   },

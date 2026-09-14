@@ -27,12 +27,6 @@ jobs:
       - name: Build
         run: pnpm run build
 
-      - name: Package plugin
-        run: |
-          mkdir note-snapshots
-          cp dist/note-snapshots/main.js dist/note-snapshots/manifest.json dist/note-snapshots/styles.css note-snapshots/
-          zip -r note-snapshots.zip note-snapshots
-
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -41,7 +35,6 @@ jobs:
           gh release create "$tag" \
             --title "$tag" \
             --notes "" \
-            note-snapshots.zip \
-            dist/note-snapshots/main.js \
-            dist/note-snapshots/manifest.json \
-            dist/note-snapshots/styles.css
+            dist/main.js \
+            dist/manifest.json \
+            dist/styles.css

@@ -208,7 +208,7 @@ export class IdentityService {
 
 /** Generates a path-safe random id. */
 function newNoteId(): string {
-	return window.crypto?.randomUUID
-		? window.crypto.randomUUID().replace(/-/g, '')
+	return activeWindow.crypto?.randomUUID
+		? activeWindow.crypto.randomUUID().replace(/-/g, '')
 		: Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
 }

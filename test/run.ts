@@ -15,6 +15,12 @@ import { TaskQueue } from '../src/util/task-queue';
 import { FakeVault } from './fake-vault';
 import type { TFile } from './stubs/obsidian';
 
+// The core layer reads the ambient `activeWindow` Obsidian sets up in every real
+// window (main or popout) rather than `window` directly, per Obsidian's own plugin
+// guidance. Node has neither, so stand in the same way Obsidian itself does: point it
+// at the global scope, which already carries Node's native `crypto`.
+(globalThis as { activeWindow?: typeof globalThis }).activeWindow = globalThis;
+
 let passed = 0;
 let failed = 0;
 

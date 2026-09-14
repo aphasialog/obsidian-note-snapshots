@@ -43,7 +43,7 @@ export function algorithmsDiffer(a: string, b: string): boolean {
 
 /** Tries SHA-256 via `crypto.subtle`; null if it's unavailable or throws. */
 async function sha256Hex(data: BufferSource): Promise<string | null> {
-	const subtle = window.crypto?.subtle;
+	const subtle = activeWindow.crypto?.subtle;
 	if (!subtle) {
 		warnFallback('crypto.subtle unavailable');
 		return null;

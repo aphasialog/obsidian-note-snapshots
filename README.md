@@ -43,9 +43,8 @@ pnpm install
 pnpm build
 ```
 
-This writes `dist/note-snapshots/`. Copy that folder into
-`<vault>/.obsidian/plugins/`, then enable **Note Snapshots** under
-**Settings → Community plugins**.
+This writes `dist/`. Copy it to `<vault>/.obsidian/plugins/note-snapshots/`, then
+enable **Note Snapshots** under **Settings → Community plugins**.
 
 Requires Obsidian 1.5.0 or newer. Works on desktop and mobile — see the mobile
 picture-refresh lag under [Limitations](#limitations).
@@ -98,9 +97,10 @@ vault, so the invariants above — the no-growth property, copy-vs-move
 discrimination, attachment recovery — are checked without launching Obsidian.
 
 Build output folder: `OBSIDIAN_PLUGIN_DIR` if set, else
-`<OBSIDIAN_VAULT>/.obsidian/plugins/note-snapshots/`, else
-`dist/note-snapshots/`. The folder name comes from `id` in `manifest.json`.
-Pair `OBSIDIAN_VAULT` with `pnpm dev` for a rebuild-into-vault loop; see
+`<OBSIDIAN_VAULT>/.obsidian/plugins/note-snapshots/`, else `dist/` (flat — the
+location Obsidian's community-plugin build verification expects; the installed cases
+above use the `id` from `manifest.json` instead). Pair `OBSIDIAN_VAULT` with `pnpm dev`
+for a rebuild-into-vault loop; see
 [.devcontainer/devcontainer.json](.devcontainer/devcontainer.json).
 
 ## How it works
