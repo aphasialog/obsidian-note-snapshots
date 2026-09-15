@@ -725,7 +725,11 @@ await scenario('Attachments: "replace" overwrites a changed file even when its c
 	const noteId = (await identity.resolveNoteId(file))!;
 	vault.binaryDisk.set('pic.png', bytes('pic-2-uncaptured'));
 
-	const outcome = await restore(snapshots, file, v1.row.snapshotId, { attachments: 'replace' });
+	// Text still matches v1 exactly, but the attachment has since changed in place —
+	// genuine unsaved work (see getWorkingStateWithAttachments). Passing
+	// dropUnsavedWork skips the automatic backup that would otherwise capture and
+	// recover it, so this restore's "replace" truly discards the only copy.
+	const outcome = await restore(snapshots, file, v1.row.snapshotId, { attachments: 'replace', dropUnsavedWork: true });
 	equal('nothing was left in place', outcome.attachmentsSkipped.length, 0);
 	equal('it was not reported as recoverable', outcome.attachmentsOverwrittenAndRecoverable.length, 0);
 	equal('it is reported as discarded', outcome.attachmentsOverwrittenAndUnrecoverable.join(','), 'pic.png');
@@ -735,6 +739,55 @@ await scenario('Attachments: "replace" overwrites a changed file even when its c
 		'pic-1',
 	);
 	void noteId;
+});
+
+await scenario('Attachments: an in-place attachment change is detected as unsaved work even when the text still matches', async () => {
+	const { vault, snapshots } = harness();
+	vault.createAttachment('pic.png', bytes('pic-1'));
+	const file = vault.createNote('Combo.md', '![[pic.png]]\ntext\n');
+	const v1 = await snapshots.saveSnapshot(file, 'v1');
+	vault.binaryDisk.set('pic.png', bytes('pic-2'));
+
+	equal('text alone still reads clean', (await snapshots.getWorkingState(file)).kind, 'clean');
+	const plan = await snapshots.planRestore(file, v1.row.snapshotId);
+	equal('the combined plan sees unsaved work', plan.workingState?.kind, 'unsaved');
+
+	const outcome = await snapshots.restoreSnapshot(file, plan, { attachments: 'replace' });
+	check('a backup captured the changed attachment first', outcome.backup !== null);
+	equal('the overwritten attachment is recoverable from that backup', outcome.attachmentsOverwrittenAndRecoverable.length, 1);
+});
+
+await scenario('Attachments: the combo check finds a matching twin even when it is not the one getWorkingState prefers', async () => {
+	const { vault, snapshots } = harness();
+	vault.createAttachment('pic.png', bytes('pic-1'));
+	const file = vault.createNote('Twins.md', '![[pic.png]]\ntext\n');
+	const v1 = await snapshots.saveSnapshot(file, 'v1');
+
+	// An attachment-only edit still records a new snapshot on an explicit save: v2's
+	// text is byte-identical to v1's, but its attachment differs. v2 becomes active.
+	vault.binaryDisk.set('pic.png', bytes('pic-2'));
+	const v2 = await snapshots.saveSnapshot(file, 'v2');
+
+	// Revert the attachment back to what v1 — not v2 — recorded. Text still matches both.
+	vault.binaryDisk.set('pic.png', bytes('pic-1'));
+
+	const working = await snapshots.getWorkingState(file);
+	equal(
+		'text alone prefers the active twin (v2), which no longer matches the attachment',
+		working.kind === 'clean' ? working.snapshotId : null,
+		v2.row.snapshotId,
+	);
+
+	const plan = await snapshots.planRestore(file, v1.row.snapshotId);
+	equal('the combo check still finds a genuine match', plan.workingState?.kind, 'clean');
+	equal(
+		'and names the twin that actually matches (v1), not the one getWorkingState preferred',
+		plan.workingState?.kind === 'clean' ? plan.workingState.snapshotId : null,
+		v1.row.snapshotId,
+	);
+
+	const outcome = await snapshots.restoreSnapshot(file, plan);
+	check('no unnecessary backup was created', outcome.backup === null);
 });
 
 await scenario('Attachments: identical images across snapshots are stored once', async () => {

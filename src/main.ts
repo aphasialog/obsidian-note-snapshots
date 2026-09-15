@@ -195,10 +195,10 @@ export default class NoteSnapshotsPlugin extends Plugin {
 		// Only the name is prefilled — the user still confirms explicitly, so a
 		// snapshot is never created without their say-so.
 		const suggestion = suggestedSnapshotName(this.settings, { note: file.basename });
-		// If the note's text already matches a stored snapshot, say so — the user can
-		// still save an identical snapshot from here, they just do it knowingly. Text
-		// only: an attachment-only change still reads as a match here.
-		const working = await this.getWorkingStateOrNull(file);
+		// If this save would be a true no-op — text and attachments both already
+		// captured by some snapshot — say so. The user can still save an identical
+		// snapshot from here, they just do it knowingly.
+		const working = await this.getWorkingStateWithAttachmentsOrNull(file);
 		const duplicateOf = working?.kind === 'clean' ? formatSnapshotLabel(working.n, working.name) : null;
 		const entered = await new Promise<{ name: string; message: string } | null>((resolve) =>
 			new SnapshotModal(
@@ -208,9 +208,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 					cta: 'Save',
 					namePlaceholder: 'Optional name, e.g. before rewrite',
 					...(suggestion ? { initialName: suggestion } : {}),
-					...(duplicateOf
-						? { notice: `The note text is identical to ${duplicateOf}.` }
-						: {}),
+					...(duplicateOf ? { notice: `This is already saved as ${duplicateOf}.` } : {}),
 				},
 				resolve,
 			).open(),
@@ -522,10 +520,16 @@ export default class NoteSnapshotsPlugin extends Plugin {
 
 	// --- Shared internals ---
 
-	/** The working state, or null when it could not be determined; callers treat that as "not safe". */
-	private async getWorkingStateOrNull(file: TFile): Promise<WorkingState | null> {
+	/**
+	 * The working state including attachments, or null when it could not be
+	 * determined; callers treat that as "not safe". Attachment-aware (see
+	 * `getWorkingStateWithAttachments`) so `snapshotWithPrompt`'s duplicate notice only
+	 * fires when saving now would be a true no-op — text and attachments both already
+	 * captured — not merely when the text happens to match some other snapshot.
+	 */
+	private async getWorkingStateWithAttachmentsOrNull(file: TFile): Promise<WorkingState | null> {
 		try {
-			return await this.snapshots.getWorkingState(file);
+			return await this.snapshots.getWorkingStateWithAttachments(file);
 		} catch (error) {
 			console.error('Note Snapshots: could not read the working state.', error);
 			return null;

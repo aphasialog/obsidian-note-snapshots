@@ -1,9 +1,10 @@
 # A lean per-file snapshot plugin for Obsidian
 
-**Status:** implemented (sections 1–8), §2a and §2b included — each snapshot records its full path at capture
-time as a display and recovery hint, restore is a pure content checkout (it never renames or moves the note),
-and a snapshot carries the note's embedded attachments: missing ones are recreated relative to where the note
-lives now, and a changed-in-place one is put back after a prompt (§2b).
+**Status:** implemented (sections 1–8), §2a, §2b, and §2c included — each snapshot records its full path at
+capture time as a display and recovery hint, restore is a pure content checkout (it never renames or moves the
+note), a snapshot carries the note's embedded attachments (missing ones are recreated relative to where the note
+lives now, and a changed-in-place one is put back after a prompt, §2b), and the unsaved-work check behind
+restore's auto-backup accounts for attachments, not just note text (§2c).
 
 **Scope.** Per-file snapshots only. Folder-level snapshot and restore are deliberately **not** supported;
 §9 explains why.
@@ -45,10 +46,16 @@ Trace with `V1` holding content *A*, `V2` holding content *B*, file currently at
 
 1. **Restoring never creates a snapshot.** It writes the stored content to the file and moves a pointer.
    Toggling between snapshots is free, forever.
-3. **The note manifest carries `head`** — the snapshot id the working file currently matches. It drives the
-   "current" marker in the list, and makes "is there unsaved work?" a hash comparison rather than a guess.
-4. **One auto-snapshot, one condition.** Restore backs up the working file only when its hash matches *no*
-   stored snapshot, i.e. there is genuine unsaved work that would otherwise be lost. Named
+3. **The note manifest carries `head`** — the snapshot id the working file currently matches. A cheap, text-only
+   hash comparison drives the "current" marker in the list (display only); whether there is genuine *unsaved
+   work* — the question restore's auto-backup (rule 4) actually depends on — needs the stronger, attachment-aware
+   check described in §2c.
+4. **One auto-snapshot, one condition — offered as a choice, not sprung on the user.** At the service level,
+   restore backs up the working file whenever it matches *no* stored snapshot — text and attachments together,
+   §2c — unless the caller explicitly opts out (`dropUnsavedWork`). The UI never takes that backup silently
+   behind the user's back: when unsaved work is at stake, it prompts with "Snapshot & restore" (the default —
+   keeps the backup) against "Restore only" (discards it), and the user picks. The only case with no prompt at
+   all is "Confirm before restoring" set to `Never`, where the backup still happens, just without asking. Named
    `Unsaved changes before restore`. It cannot fire twice for the same state.
 
 Consequence worth confirming: after restoring `V1` and editing, the next manual snapshot becomes the newest
@@ -167,6 +174,36 @@ independent of both path and content — meaningful complexity to fix a flagging
 Blobs orphaned by a snapshot deletion are
 garbage-collected by `gcAttachments` on every deletion path (`removeSnapshot`, `removeAllSnapshots`) once no
 surviving snapshot references the hash.
+
+### 2c. Unsaved-work detection accounts for attachments, not just note text
+
+Implemented. The cheap "current" check compares note text only, so on its own it can miscall the state in two
+ways: an attachment changed in place after the note text last matched a snapshot still reads as clean, and — more
+subtly — a note can have several snapshots sharing byte-identical text (an attachment-only edit still records a
+new snapshot on an explicit save, §2b), so "text matches some snapshot" says nothing about which twin, if any,
+the current attachments also match.
+
+**How it works:**
+
+- `getWorkingState` stays exactly the cheap, text-only proxy it always was: hash the note body, compare against
+  every snapshot's stored hash, confirm the winner by content. It is used only for low-stakes, high-frequency
+  display — the History view's status badge (recomputed on every note edit while the view is open) and the save
+  prompt's duplicate-of hint. Nothing with real stakes reads it.
+- `getWorkingStateWithAttachments` is the accurate check. It finds *every* snapshot sharing the note's current
+  text, not just one, and returns `clean` for the first of those twins — checked-out snapshot preferred, then
+  newest — whose own recorded attachments also match the note's current attachments. That comparison is done
+  index-by-index rather than by matching names: valid only because the text on both sides is already known
+  byte-identical, which guarantees both were parsed into the same embeds in the same order. If none of the
+  same-text twins' attachments match, the state is `unsaved` even though text alone would call it clean.
+- `planRestore` calls `getWorkingStateWithAttachments`, not `getWorkingState` — restore's auto-backup (rule 4) is
+  the one decision this actually protects, so it needs the accurate answer. The two checks can disagree on
+  purpose in the attachment-changed-in-place case: the History badge can say "clean" while the same restore
+  treats the state as unsaved and takes a backup first. That is by design — the badge is a hint, the backup
+  decision is what actually protects data.
+
+Deliberately not done: `getWorkingState` itself was not made attachment-aware. It also runs on every note edit
+while the History view is open, and hashing every embedded attachment on that path would be needlessly expensive
+for a check nothing safety-critical depends on.
 
 ## 3. Storage
 

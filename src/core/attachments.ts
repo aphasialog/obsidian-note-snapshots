@@ -23,6 +23,10 @@ const MD_EMBED = /!\[[^\]]*\]\(([^)\s]+)[^)]*\)/g;
  *
  * Blobs are content-addressed and deduplicated within the note's store: an image
  * embedded unchanged across many snapshots is written once.
+ *
+ * Pass `dryRun: true` to compute the same refs without writing to the store — for
+ * checking what a snapshot taken right now would look like, without taking one (see
+ * `SnapshotService.planRestore`'s attachment-combo check).
  */
 export async function captureAttachments(
 	app: App,
@@ -30,17 +34,37 @@ export async function captureAttachments(
 	noteId: string,
 	notePath: string,
 	content: string,
+	options?: { dryRun?: boolean },
 ): Promise<AttachmentRef[]> {
+	const dryRun = options?.dryRun ?? false;
 	const refs = new Map<string, AttachmentRef>();
 
 	for (const rawLink of extractEmbedLinks(content)) {
 		const target = resolveEmbedFile(app, notePath, rawLink);
 		if (!target || target.extension === 'md' || refs.has(target.path)) continue;
 
-		const data = await app.vault.readBinary(target);
-		const hash = await hashAttachmentBytes(data);
-		await store.writeAttachment(noteId, hash, data);
-		refs.set(target.path, { path: target.path, hash, size: data.byteLength });
+		if (dryRun) {
+			// Case 1: dry run — never writes to the store.
+			const size = await fileSize(app, target.path);
+			if (size === null) continue;
+			// Case 1.1: too large to hash cheaply — record path + size only, with
+			// hash: '' as the "not computed" sentinel (see attachmentsMatch).
+			if (size >= COMPARE_SIZE_CAP) {
+				refs.set(target.path, { path: target.path, size, hash: '' });
+				continue;
+			}
+			// Case 1.2: small enough to hash — same bytes a real capture would hash,
+			// just never written.
+			const data = await app.vault.readBinary(target);
+			refs.set(target.path, { path: target.path, hash: await hashAttachmentBytes(data), size: data.byteLength });
+		} else {
+			// Case 2: a real capture — always hash and write the blob, regardless of
+			// size; this only runs on an explicit user save, so the cost is acceptable.
+			const data = await app.vault.readBinary(target);
+			const hash = await hashAttachmentBytes(data);
+			await store.writeAttachment(noteId, hash, data);
+			refs.set(target.path, { path: target.path, hash, size: data.byteLength });
+		}
 	}
 
 	return [...refs.values()];
@@ -181,6 +205,30 @@ export interface AttachmentChange {
 /** True if some snapshot's stored attachments still include `hash`. */
 export function hasSnapshotWithAttachment(manifest: NoteManifest, hash: string): boolean {
 	return Object.values(manifest.snapshots).some((meta) => (meta.attachments ?? []).some((ref) => ref.hash === hash));
+}
+
+/**
+ * Whether `current` — a note's current attachments, as computed by `captureAttachments`
+ * with `dryRun: true` — are exactly the ones some snapshot's own `AttachmentRef[]`
+ * recorded.
+ *
+ * Compared position by position, not by matching names: this is only ever called once
+ * the note's text has already been confirmed byte-identical to the matched snapshot's
+ * (see `refineWorkingStateWithAttachments`), and `captureAttachments` extracts embeds
+ * by scanning that same text in document order — identical text guarantees identical
+ * embed order, so index `i` on one side is provably the same embed as index `i` on the
+ * other, with no need to match them up by name.
+ *
+ * Compared by size, plus hash unless the current ref's hash is the `''` "not computed"
+ * sentinel a dry run uses for a file at or above `COMPARE_SIZE_CAP`, in which case size
+ * alone decides — the same size-based trust extended to large files elsewhere.
+ */
+export function hasSameAttachments(current: AttachmentRef[], recorded: AttachmentRef[]): boolean {
+	if (current.length !== recorded.length) return false;
+	return current.every((fp, i) => {
+		const ref = recorded[i]!;
+		return ref.size === fp.size && (fp.hash === '' || ref.hash === fp.hash);
+	});
 }
 
 /** Determines a snapshot's attachments' status against the vault now, without changing anything. */

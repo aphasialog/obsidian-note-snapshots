@@ -13,6 +13,7 @@ import type { TaskQueue } from '@/util/task-queue';
 import { algorithmsDiffer, hashNoteContent } from '@/util/hash';
 import {
 	captureAttachments,
+	hasSameAttachments,
 	hasSnapshotWithAttachment,
 	planAttachmentChanges,
 	restoreAttachments,
@@ -37,12 +38,18 @@ export const UNSAVED_LABEL = 'Unsaved changes before restore';
 export interface RestorePlan {
 	target: SnapshotRow;
 	/**
-	 * The working file's state, or null if it could not be read. Text-only (see
-	 * `findSnapshotIdByNoteContent`) — it says nothing about attachments, and a caller
-	 * deciding whether to confirm should not treat "clean" here as "nothing to ask
-	 * about". `attachmentsToOverwriteAndCaptured`/`Uncaptured` below is the independent
-	 * signal for that; the UI checks those first and consults `workingState` only once
-	 * they're both empty (see `decideRestore`).
+	 * The working file's state, or null if it could not be read. This is
+	 * `getWorkingStateWithAttachments`'s answer, not the plain `getWorkingState()`'s —
+	 * text matching snapshot X while its attachments have since changed is real unsaved
+	 * work, not a clean checkout of X, and reads as `unsaved` here even though text
+	 * alone would call it clean.
+	 *
+	 * Even so, a caller deciding whether to confirm should not treat "clean" here as
+	 * "nothing to ask about" for the *target* being restored to —
+	 * `attachmentsToOverwriteAndCaptured`/`Uncaptured` below is the independent signal
+	 * for that, checked against the target rather than the working state; the UI checks
+	 * those first and consults `workingState` only once they're both empty (see
+	 * `decideRestore`).
 	 */
 	workingState: WorkingState | null;
 	/** What `restoreSnapshot`/`backupAndRestoreSnapshot` execute against directly. */
@@ -119,11 +126,14 @@ export class SnapshotService {
 	}
 
 	/**
-	 * Whether the working file matches a stored snapshot (rule R3).
+	 * This is a cheap, text-only proxy for whether the working file matches a stored
+	 * snapshot (rule R3) — it says nothing about attachments, so a changed-in-place
+	 * attachment still reads as `clean` here.
 	 *
-	 * Text-only — it says nothing about attachments. A changed-in-place attachment is
-	 * detected separately, during `planRestore`'s own comparison against the vault, and
-	 * a caller deciding whether to confirm a restore must check both (see `RestorePlan`).
+	 * Used for: live display only — the History view's status badge (recomputed on
+	 * every note edit while the view is open) and the save prompt's duplicate-of hint.
+	 * Nothing with real stakes reads this; `getWorkingStateWithAttachments` is the
+	 * accurate check for that.
 	 */
 	async getWorkingState(file: TFile): Promise<WorkingState> {
 		const noteId = await this.identity.resolveNoteId(file);
@@ -132,13 +142,50 @@ export class SnapshotService {
 		if (!manifest || Object.keys(manifest.snapshots).length === 0) return { kind: 'untracked' };
 
 		const content = await this.readNoteContent(file);
-		const matchId = await this.findSnapshotIdByNoteContent(manifest, content, await hashNoteContent(content));
-		if (!matchId) return { kind: 'unsaved' };
-		const meta = manifest.snapshots[matchId]!;
+		const matchIds = await this.findSnapshotIdsByNoteContent(manifest, content, await hashNoteContent(content));
+		if (matchIds.length === 0) return { kind: 'unsaved' };
+		return this.cleanState(manifest, matchIds[0]!);
+	}
+
+	/**
+	 * This is whether the working file matches a stored snapshot (rule R3), text and
+	 * attachments together — text matching snapshot X while X's attachments have
+	 * since changed is real unsaved work, not a clean checkout of X. Checks every
+	 * snapshot sharing the current text (see `findSnapshotIdsByNoteContent`), not just
+	 * one: two snapshots can share identical text with different attachments, and the
+	 * current attachments might match a twin other than the first one considered.
+	 *
+	 * Used for: the one decision with real stakes — whether `planRestore`'s rule R4
+	 * automatic backup fires before a restore (`planRestore` is its only caller). Kept
+	 * separate from `getWorkingState` because that method also runs on every note edit
+	 * while the History view is open, where hashing every embedded attachment would be
+	 * needlessly expensive for a live display no decision depends on.
+	 */
+	async getWorkingStateWithAttachments(file: TFile): Promise<WorkingState> {
+		const noteId = await this.identity.resolveNoteId(file);
+		if (!noteId) return { kind: 'untracked' };
+		const manifest = await this.store.loadNoteManifest(noteId);
+		if (!manifest || Object.keys(manifest.snapshots).length === 0) return { kind: 'untracked' };
+
+		const content = await this.readNoteContent(file);
+		const current = await captureAttachments(this.app, this.store, manifest.noteId, file.path, content, { dryRun: true });
+
+		const candidateIds = await this.findSnapshotIdsByNoteContent(manifest, content, await hashNoteContent(content));
+		for (const id of candidateIds) {
+			if (hasSameAttachments(current, manifest.snapshots[id]?.attachments ?? [])) {
+				return this.cleanState(manifest, id);
+			}
+		}
+		return { kind: 'unsaved' };
+	}
+
+	/** Builds the `clean` verdict for a known-matching snapshot. Used by getWorkingState and getWorkingStateWithAttachments. */
+	private cleanState(manifest: NoteManifest, snapshotId: string): WorkingState & { kind: 'clean' } {
+		const meta = manifest.snapshots[snapshotId]!;
 		return {
 			kind: 'clean',
-			snapshotId: matchId,
-			n: numberByAge(manifest.snapshots).get(matchId)!,
+			snapshotId,
+			n: numberByAge(manifest.snapshots).get(snapshotId)!,
 			...(meta.name ? { name: meta.name } : {}),
 		};
 	}
@@ -180,7 +227,7 @@ export class SnapshotService {
 
 		let workingState: WorkingState | null = null;
 		try {
-			workingState = await this.getWorkingState(file);
+			workingState = await this.getWorkingStateWithAttachments(file);
 		} catch (error) {
 			console.error('Note Snapshots: could not read the working state before restore.', error);
 		}
@@ -427,27 +474,23 @@ export class SnapshotService {
 	}
 
 	/**
-	 * Finds the snapshot holding exactly this content.
+	 * Every snapshot holding exactly this content — usually at most one, but text alone
+	 * doesn't pin down a single snapshot: two snapshots can share byte-identical text
+	 * while differing only in their attachments.
 	 *
-	 * Direct text comparison only — the hash narrows the candidates, equality is always
-	 * confirmed by comparing the stored bytes, so a weak fallback hash can never cause a
-	 * wrong match. It never looks at attachments, so the `clean`/`unsaved` verdict this
-	 * produces (via getWorkingState) can say "clean" while an embedded attachment has
-	 * actually changed in place. That's fine to leave as is: nothing downstream trusts
-	 * this verdict for attachment safety. A restore checks attachments separately and
-	 * lazily — only when actually attempted, straight against the *target* snapshot's
-	 * own recorded attachments (see `planAttachmentChanges`) — so it stays correct
-	 * regardless of what this function said.
+	 * The hash only narrows the candidates; equality is always confirmed by comparing
+	 * the stored bytes, so a weak fallback hash can never cause a wrong match.
 	 *
-	 * Returns the matching snapshot's id, preferring `activeSnapshotId` when several
-	 * snapshots hold identical content. Used by getWorkingState, saveSnapshot, and
-	 * restoreSnapshot.
+	 * Ordered for the most useful "first result", since both callers just take
+	 * whichever id they land on first (`getWorkingState`, and
+	 * `getWorkingStateWithAttachments` picking the first result that also matches
+	 * attachments):
+	 *
+	 *  - `activeSnapshotId` first, when it's among the matches — the checked-out
+	 *    snapshot wins over any other twin.
+	 *  - Otherwise, newest first.
 	 */
-	private async findSnapshotIdByNoteContent(
-		manifest: NoteManifest,
-		content: string,
-		hash: string,
-	): Promise<string | null> {
+	private async findSnapshotIdsByNoteContent(manifest: NoteManifest, content: string, hash: string): Promise<string[]> {
 		const entries = Object.entries(manifest.snapshots);
 		let candidates = entries.filter(([, meta]) => meta.hash === hash);
 
@@ -455,22 +498,23 @@ export class SnapshotService {
 			// Hashes written by a different algorithm say nothing about equality, so
 			// those have to be compared by content.
 			candidates = entries.filter(([, meta]) => algorithmsDiffer(meta.hash, hash));
-			if (candidates.length === 0) return null;
+			if (candidates.length === 0) return [];
 		}
 
 		// Try the checked-out snapshot first, so identical-content twins resolve to the
-		// one the user is on (last restored, or just saved) rather than whichever was
-		// created first. The rest keep creation order.
-		let ids = candidates.map(([id]) => id);
+		// one the user is on (last restored, or just saved) rather than whichever is
+		// newest. The rest are newest first.
+		let ids = candidates.map(([id]) => id).sort((a, b) => manifest.snapshots[b]!.ts.localeCompare(manifest.snapshots[a]!.ts));
 		if (manifest.activeSnapshotId && ids.includes(manifest.activeSnapshotId)) {
 			ids = [manifest.activeSnapshotId, ...ids.filter((id) => id !== manifest.activeSnapshotId)];
 		}
 
+		const matches: string[] = [];
 		for (const id of ids) {
 			const stored = await this.store.readSnapshot(manifest.noteId, id);
-			if (stored === content) return id;
+			if (stored === content) matches.push(id);
 		}
-		return null;
+		return matches;
 	}
 
 	/** Writes content as a new snapshot, points `activeSnapshotId` at it, and returns its id. Caller runs inside the note's queue. Used by saveSnapshot and restoreSnapshot. */
