@@ -32,7 +32,8 @@ Folder-wide snapshot and restore are out of scope by design (see
 
 ### From within Obsidian
 
-Not yet available in the Community Plugins browser.
+In **Settings → Community plugins → Browse**, search for **Note Snapshots**, then
+**Install** and **Enable**.
 
 ### Manual
 
