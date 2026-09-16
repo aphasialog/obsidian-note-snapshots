@@ -28,6 +28,8 @@ Built around one idea: **keep a meaningful snapshot history**.
 Folder-wide snapshot and restore are out of scope by design (see
 [Out of scope](#out-of-scope)).
 
+![Snapshot history sidebar in light and dark mode](combined_preview.png)
+
 ## Installation
 
 ### From within Obsidian
