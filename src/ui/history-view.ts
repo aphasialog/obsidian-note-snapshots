@@ -243,7 +243,7 @@ export class HistoryView extends ItemView {
 		if (!this.noteId) return null;
 		const content = await this.plugin.snapshots.readSnapshot(this.noteId, row.snapshotId);
 		if (content === null) {
-			new Notice(`V${row.n} content is missing from the store.`);
+			new Notice(`${formatSnapshotLabel(row.n, row.name)}'s content is missing from the store.`);
 			void this.refresh();
 		}
 		return content;
@@ -253,9 +253,9 @@ export class HistoryView extends ItemView {
 		const working = this.working;
 		switch (working.kind) {
 			case 'clean':
-				return `Matches V${working.n}`;
+				return `Matches ${formatSnapshotLabel(working.n, working.name)}`;
 			case 'unsaved':
-				return 'Unsaved changes';
+				return 'Unsaved work';
 			case 'untracked':
 				return 'Not tracked yet';
 		}

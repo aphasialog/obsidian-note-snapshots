@@ -27,34 +27,35 @@ export function formatAttachmentNames(names: string[], max = 3): string {
  * What the restore confirmation says, tailored to what the restore will actually do.
  *
  * A `clean` working file is the only case worth distinguishing: its content is
- * already saved, so restoring risks nothing. Every other case — unsaved work, or a
- * state we could not determine — gets the same message, since both are resolved the
- * same way: whatever is not already snapshotted is captured first.
+ * identical to some snapshot, so restoring risks nothing. Every other case —
+ * unsaved work, or a state we could not determine — gets the same message, since both
+ * are resolved the same way: whatever is unsaved is captured first.
  */
 export function restoreConfirmationMessage(basename: string, row: SnapshotRow, working: WorkingState | null): string {
 	const target = formatSnapshotLabel(row.n, row.name);
 
 	if (working?.kind === 'clean') {
 		if (working.snapshotId === row.snapshotId) {
-			return `"${basename}" already matches ${target}, so restoring changes nothing.`;
+			return `"${basename}" is identical to ${target}, so restoring changes nothing.`;
 		}
-		return `Replace the contents of "${basename}" with ${target}? The current content is already saved as V${working.n}.`;
+		return `Replace the contents of "${basename}" with ${target}? The current content is identical to ${formatSnapshotLabel(working.n, working.name)}.`;
 	}
 
-	return `Replace the contents of "${basename}" with ${target}? Any content that is not already snapshotted can be captured first.`;
+	return `Replace the contents of "${basename}" with ${target}? Any unsaved work can be captured first.`;
 }
 
 /** The single notice shown after a restore, covering the body and every attachment it touched. */
 export function describeRestoreOutcome(outcome: RestoreOutcome, mode: AttachmentConflictMode): string {
-	const n = outcome.restored.n;
+	const restored = formatSnapshotLabel(outcome.restored.n, outcome.restored.name);
 	const parts: string[] = [];
 
 	if (outcome.backup) {
-		parts.push(`Saved the previous state as V${outcome.backup.n}, then restored V${n}.`);
+		const backup = formatSnapshotLabel(outcome.backup.n, outcome.backup.name);
+		parts.push(`Saved the previous state as ${backup}, then restored ${restored}.`);
 	} else if (mode === 'skip' && outcome.attachmentsSkipped.length > 0) {
-		parts.push(`Restored V${n}'s text.`);
+		parts.push(`Restored ${restored}'s text.`);
 	} else {
-		parts.push(`Restored V${n}.`);
+		parts.push(`Restored ${restored}.`);
 	}
 
 	if (outcome.attachmentsRecreated > 0) {

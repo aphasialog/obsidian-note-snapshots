@@ -24,7 +24,7 @@ import {
 export type { AttachmentConflictMode };
 
 /** The name given to the one automatic snapshot the plugin ever takes. */
-export const UNSAVED_LABEL = 'Unsaved changes before restore';
+export const UNSAVED_LABEL = 'Unsaved work before restore';
 
 /**
  * What a restore would touch beyond the note body, computed before asking the user.

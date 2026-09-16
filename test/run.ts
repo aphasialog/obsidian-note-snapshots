@@ -890,13 +890,13 @@ await scenario('Restore prompts: "when-unsaved" asks only when a restore would o
 	check(
 		'the clean message names which snapshot already has the content',
 		restoreConfirmationMessage('Prompt', v1.row, { kind: 'clean', snapshotId: 'other', n: 7 }).includes(
-			'already saved as V7',
+			'identical to V7',
 		),
 	);
 	check(
 		'restoring the snapshot you are on says so',
 		restoreConfirmationMessage('Prompt', v1.row, { kind: 'clean', snapshotId: v1.row.snapshotId, n: v1.row.n }).includes(
-			'already matches',
+			'is identical to',
 		),
 	);
 	check(

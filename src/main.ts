@@ -208,7 +208,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 					cta: 'Save',
 					namePlaceholder: 'Optional name',
 					...(suggestion ? { initialName: suggestion } : {}),
-					...(duplicateOf ? { notice: `This is already saved as ${duplicateOf}.` } : {}),
+					...(duplicateOf ? { notice: `The current content is identical to ${duplicateOf}.` } : {}),
 				},
 				resolve,
 			).open(),
@@ -360,7 +360,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 		// into a decision.
 		const choices = atRisk
 			? [{ label: 'Restore text only' }, { label: 'Snapshot & restore', cta: true }]
-			: [{ label: 'Restore text only' }, { label: 'Replace attachments', cta: true }];
+			: [{ label: 'Restore text only' }, { label: 'Restore & replace attachments', cta: true }];
 
 		const index = await new Promise<number | null>((resolve) =>
 			new ChoiceModal(this.app, { title: `Restore ${target}`, body, list, choices }, resolve).open(),
@@ -371,7 +371,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 	}
 
 	/**
-	 * Restore over a note with unsaved changes and no attachment at stake: keep the
+	 * Restore over a note with unsaved work and no attachment at stake: keep the
 	 * unsaved text as a backup snapshot first (the default), or discard it. Cancel
 	 * backs out.
 	 */
@@ -387,7 +387,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 						'This restore will overwrite the note.',
 					],
 					choices: [
-						{ label: 'Restore only' },
+						{ label: 'Discard and restore' },
 						{ label: 'Snapshot & restore', cta: true },
 					],
 				},
@@ -488,7 +488,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 
 		try {
 			await this.snapshots.removeSnapshot(noteId, row.snapshotId);
-			new Notice(`Deleted V${row.n}.`);
+			new Notice(`Deleted ${formatSnapshotLabel(row.n, row.name)}.`);
 			this.refreshViews();
 		} catch (error) {
 			this.reportError('Could not delete that snapshot', error);
