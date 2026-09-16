@@ -5,21 +5,24 @@ import type { WorkingState } from '@/types';
  *
  *  - `always`       — confirm every restore.
  *  - `when-unsaved` — confirm only when the restore would overwrite unsaved work: the
- *                     working file is in no snapshot, so it is backed up first rather
+ *                     working file matches no snapshot, so it is backed up first rather
  *                     than the restore just moving `activeSnapshotId`.
  *  - `never`        — restore immediately.
  *
- * `when-unsaved` is judged by note text alone (see `findSnapshotIdByNoteContent`) — an
- * attachment changed in place doesn't move it, so the working-state badge can read
- * "clean" while an attachment has actually drifted.
+ * `when-unsaved` is judged by the accurate, attachment-aware check (see
+ * `SnapshotService.getWorkingState`) — text matching some snapshot while its
+ * attachments have since changed still counts as unsaved work here, not "clean".
  *
- * That's safe: attachment changes are found separately and lazily, only once a
- * restore is actually attempted, by checking the *target* snapshot's own recorded
- * attachments against the vault (`planRestore`, via `planAttachmentChanges`).
+ * A changed embedded attachment gets its own, independent confirm-and-restore path
+ * regardless of this policy's verdict on the note body: it's checked separately and
+ * lazily, only once a restore is actually attempted, against the *target* snapshot's
+ * own recorded attachments (`computeRestorePlan`, via `planAttachmentChanges`) — so it
+ * fires on the ordinary case of restoring to a version whose attachments simply differ
+ * from the current ones, not only when something is actually unsaved.
  *
- * That check is gated by this same policy, not a separate setting — `decideRestore`
- * gates it on the very same `never` above: `always` and `when-unsaved` alike always
- * confirm an attachment overwrite, and only `never` skips it too.
+ * That attachment check is still gated by this same policy, not a separate setting —
+ * `decideRestore` gates it on the very same `never` above: `always` and `when-unsaved`
+ * alike always confirm an attachment overwrite, and only `never` skips it too.
  */
 export type RestoreConfirmPolicy = 'always' | 'when-unsaved' | 'never';
 

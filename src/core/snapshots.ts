@@ -1,5 +1,6 @@
 import type { App, TFile } from 'obsidian';
 import {
+	type AttachmentRef,
 	type NoteManifest,
 	type SnapshotOutcome,
 	SCHEMA_VERSION,
@@ -13,7 +14,6 @@ import type { TaskQueue } from '@/util/task-queue';
 import { algorithmsDiffer, hashNoteContent } from '@/util/hash';
 import {
 	captureAttachments,
-	hasSameAttachments,
 	hasSnapshotWithAttachment,
 	planAttachmentChanges,
 	restoreAttachments,
@@ -39,8 +39,8 @@ export interface RestorePlan {
 	target: SnapshotRow;
 	/**
 	 * The working file's state, or null if it could not be read. This is
-	 * `getWorkingStateWithAttachments`'s answer, not the plain `getWorkingState()`'s —
-	 * text matching snapshot X while its attachments have since changed is real unsaved
+	 * `getWorkingState`'s answer, not the cheap `getProxyWorkingState()`'s — text
+	 * matching snapshot X while its attachments have since changed is real unsaved
 	 * work, not a clean checkout of X, and reads as `unsaved` here even though text
 	 * alone would call it clean.
 	 *
@@ -132,10 +132,10 @@ export class SnapshotService {
 	 *
 	 * Used for: live display only — the History view's status badge (recomputed on
 	 * every note edit while the view is open) and the save prompt's duplicate-of hint.
-	 * Nothing with real stakes reads this; `getWorkingStateWithAttachments` is the
-	 * accurate check for that.
+	 * Nothing with real stakes reads this; `getWorkingState` is the accurate check for
+	 * that.
 	 */
-	async getWorkingState(file: TFile): Promise<WorkingState> {
+	async getProxyWorkingState(file: TFile): Promise<WorkingState> {
 		const noteId = await this.identity.resolveNoteId(file);
 		if (!noteId) return { kind: 'untracked' };
 		const manifest = await this.store.loadNoteManifest(noteId);
@@ -155,13 +155,13 @@ export class SnapshotService {
 	 * one: two snapshots can share identical text with different attachments, and the
 	 * current attachments might match a twin other than the first one considered.
 	 *
-	 * Used for: the one decision with real stakes — whether `planRestore`'s rule R4
-	 * automatic backup fires before a restore (`planRestore` is its only caller). Kept
-	 * separate from `getWorkingState` because that method also runs on every note edit
-	 * while the History view is open, where hashing every embedded attachment would be
-	 * needlessly expensive for a live display no decision depends on.
+	 * Used for: the one decision with real stakes — whether `computeRestorePlan`'s rule R4
+	 * automatic backup fires before a restore (`computeRestorePlan` is its only caller). Kept
+	 * separate from `getProxyWorkingState` because that method also runs on every note
+	 * edit while the History view is open, where hashing every embedded attachment
+	 * would be needlessly expensive for a live display no decision depends on.
 	 */
-	async getWorkingStateWithAttachments(file: TFile): Promise<WorkingState> {
+	async getWorkingState(file: TFile): Promise<WorkingState> {
 		const noteId = await this.identity.resolveNoteId(file);
 		if (!noteId) return { kind: 'untracked' };
 		const manifest = await this.store.loadNoteManifest(noteId);
@@ -172,14 +172,14 @@ export class SnapshotService {
 
 		const candidateIds = await this.findSnapshotIdsByNoteContent(manifest, content, await hashNoteContent(content));
 		for (const id of candidateIds) {
-			if (hasSameAttachments(current, manifest.snapshots[id]?.attachments ?? [])) {
+			if (this.hasSameAttachments(current, manifest.snapshots[id]?.attachments ?? [])) {
 				return this.cleanState(manifest, id);
 			}
 		}
 		return { kind: 'unsaved' };
 	}
 
-	/** Builds the `clean` verdict for a known-matching snapshot. Used by getWorkingState and getWorkingStateWithAttachments. */
+	/** Builds the `clean` verdict for a known-matching snapshot. Used by getProxyWorkingState and getWorkingState. */
 	private cleanState(manifest: NoteManifest, snapshotId: string): WorkingState & { kind: 'clean' } {
 		const meta = manifest.snapshots[snapshotId]!;
 		return {
@@ -188,6 +188,30 @@ export class SnapshotService {
 			n: numberByAge(manifest.snapshots).get(snapshotId)!,
 			...(meta.name ? { name: meta.name } : {}),
 		};
+	}
+
+	/**
+	 * Whether `current` — a note's current attachments, as computed by `captureAttachments`
+	 * with `dryRun: true` — are exactly the ones some snapshot's own `AttachmentRef[]`
+	 * recorded.
+	 *
+	 * Compared position by position, not by matching names: this is only ever called once
+	 * the note's text has already been confirmed byte-identical to the matched snapshot's
+	 * (see `getWorkingState`), and `captureAttachments` extracts embeds by scanning that
+	 * same text in document order — identical text guarantees identical embed order, so
+	 * index `i` on one side is provably the same embed as index `i` on the other, with
+	 * no need to match them up by name.
+	 *
+	 * Compared by size, plus hash unless the current ref's hash is the `''` "not computed"
+	 * sentinel a dry run uses for a file at or above `COMPARE_SIZE_CAP`, in which case size
+	 * alone decides — the same size-based trust extended to large files elsewhere.
+	 */
+	private hasSameAttachments(current: AttachmentRef[], recorded: AttachmentRef[]): boolean {
+		if (current.length !== recorded.length) return false;
+		return current.every((fp, i) => {
+			const ref = recorded[i]!;
+			return ref.size === fp.size && (fp.hash === '' || ref.hash === fp.hash);
+		});
 	}
 
 	// --- Saving a snapshot ---
@@ -218,7 +242,7 @@ export class SnapshotService {
 	 * of its embedded attachments still exist but have since changed, and whether each
 	 * changed file's current bytes survive somewhere. Reads only — changes nothing.
 	 */
-	async planRestore(file: TFile, snapshotId: string): Promise<RestorePlan> {
+	async computeRestorePlan(file: TFile, snapshotId: string): Promise<RestorePlan> {
 		const noteId = await this.identity.resolveNoteId(file);
 		if (!noteId) throw new Error('This note has no snapshot history.');
 		const manifest = await this.store.loadNoteManifest(noteId);
@@ -227,7 +251,7 @@ export class SnapshotService {
 
 		let workingState: WorkingState | null = null;
 		try {
-			workingState = await this.getWorkingStateWithAttachments(file);
+			workingState = await this.getWorkingState(file);
 		} catch (error) {
 			console.error('Note Snapshots: could not read the working state before restore.', error);
 		}
@@ -468,7 +492,7 @@ export class SnapshotService {
 	// Private helpers reused across the groups above. Ordered so each depends only
 	// on what is defined before it.
 
-	/** A display row for one snapshot, numbered against whatever snapshots exist now. Caller guarantees it exists. Used by listSnapshots, saveSnapshot, planRestore, and restoreSnapshot. */
+	/** A display row for one snapshot, numbered against whatever snapshots exist now. Caller guarantees it exists. Used by listSnapshots, saveSnapshot, computeRestorePlan, and restoreSnapshot. */
 	private toRow(manifest: NoteManifest, snapshotId: string): SnapshotRow {
 		return { snapshotId, ...manifest.snapshots[snapshotId]!, n: numberByAge(manifest.snapshots).get(snapshotId)! };
 	}
@@ -482,9 +506,8 @@ export class SnapshotService {
 	 * the stored bytes, so a weak fallback hash can never cause a wrong match.
 	 *
 	 * Ordered for the most useful "first result", since both callers just take
-	 * whichever id they land on first (`getWorkingState`, and
-	 * `getWorkingStateWithAttachments` picking the first result that also matches
-	 * attachments):
+	 * whichever id they land on first (`getProxyWorkingState`, and `getWorkingState`
+	 * picking the first result that also matches attachments):
 	 *
 	 *  - `activeSnapshotId` first, when it's among the matches — the checked-out
 	 *    snapshot wins over any other twin.

@@ -198,7 +198,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 		// If this save would be a true no-op — text and attachments both already
 		// captured by some snapshot — say so. The user can still save an identical
 		// snapshot from here, they just do it knowingly.
-		const working = await this.getWorkingStateWithAttachmentsOrNull(file);
+		const working = await this.getWorkingStateOrNull(file);
 		const duplicateOf = working?.kind === 'clean' ? formatSnapshotLabel(working.n, working.name) : null;
 		const entered = await new Promise<{ name: string; message: string } | null>((resolve) =>
 			new SnapshotModal(
@@ -242,7 +242,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 
 		let plan: RestorePlan;
 		try {
-			plan = await this.snapshots.planRestore(file, row.snapshotId);
+			plan = await this.snapshots.computeRestorePlan(file, row.snapshotId);
 		} catch (error) {
 			this.reportError('Could not restore that snapshot', error);
 			return;
@@ -522,14 +522,15 @@ export default class NoteSnapshotsPlugin extends Plugin {
 
 	/**
 	 * The working state including attachments, or null when it could not be
-	 * determined; callers treat that as "not safe". Attachment-aware (see
-	 * `getWorkingStateWithAttachments`) so `snapshotWithPrompt`'s duplicate notice only
-	 * fires when saving now would be a true no-op — text and attachments both already
-	 * captured — not merely when the text happens to match some other snapshot.
+	 * determined; callers treat that as "not safe". The accurate, attachment-aware
+	 * `SnapshotService.getWorkingState` (not the cheap `getProxyWorkingState`), so
+	 * `snapshotWithPrompt`'s duplicate notice only fires when saving now would be a
+	 * true no-op — text and attachments both already captured — not merely when the
+	 * text happens to match some other snapshot.
 	 */
-	private async getWorkingStateWithAttachmentsOrNull(file: TFile): Promise<WorkingState | null> {
+	private async getWorkingStateOrNull(file: TFile): Promise<WorkingState | null> {
 		try {
-			return await this.snapshots.getWorkingStateWithAttachments(file);
+			return await this.snapshots.getWorkingState(file);
 		} catch (error) {
 			console.error('Note Snapshots: could not read the working state.', error);
 			return null;

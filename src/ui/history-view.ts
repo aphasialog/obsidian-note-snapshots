@@ -66,7 +66,7 @@ export class HistoryView extends ItemView {
 		try {
 			this.noteId = await this.plugin.identity.resolveNoteId(this.file);
 			this.rows = this.noteId ? await this.plugin.snapshots.listSnapshots(this.noteId) : [];
-			this.working = await this.plugin.snapshots.getWorkingState(this.file);
+			this.working = await this.plugin.snapshots.getProxyWorkingState(this.file);
 		} catch (error) {
 			console.error('Note Snapshots: could not load history.', error);
 			this.rows = [];

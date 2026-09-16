@@ -65,20 +65,20 @@ function body(vault: FakeVault, file: TFile): string {
 	return (vault.disk.get(file.path) ?? '').replace(/^---\n[\s\S]*?\n---\n/, '');
 }
 
-/** planRestore then restoreSnapshot, matching how the real caller (main.ts) always uses them together. */
+/** computeRestorePlan then restoreSnapshot, matching how the real caller (main.ts) always uses them together. */
 async function restore(
 	snapshots: SnapshotService,
 	file: TFile,
 	snapshotId: string,
 	options?: { attachments?: AttachmentConflictMode; dropUnsavedWork?: boolean },
 ): Promise<RestoreOutcome> {
-	const plan = await snapshots.planRestore(file, snapshotId);
+	const plan = await snapshots.computeRestorePlan(file, snapshotId);
 	return snapshots.restoreSnapshot(file, plan, options);
 }
 
-/** planRestore then backupAndRestoreSnapshot. */
+/** computeRestorePlan then backupAndRestoreSnapshot. */
 async function backupAndRestore(snapshots: SnapshotService, file: TFile, snapshotId: string): Promise<RestoreOutcome> {
-	const plan = await snapshots.planRestore(file, snapshotId);
+	const plan = await snapshots.computeRestorePlan(file, snapshotId);
 	return snapshots.backupAndRestoreSnapshot(file, plan);
 }
 
@@ -237,20 +237,20 @@ await scenario('Working state: the current indicator is content-only', async () 
 	const file = vault.createNote('Alpha.md', 'shared body\n');
 	const v1 = await snapshots.saveSnapshot(file, 'first');
 
-	const clean = await snapshots.getWorkingState(file);
+	const clean = await snapshots.getProxyWorkingState(file);
 	equal('a freshly snapshotted note is clean', clean.kind === 'clean' && clean.snapshotId, v1.row.snapshotId);
 
 	// Rename only: the content still matches V1, so the note stays clean.
 	vault.renameNote(file, 'Beta.md');
 	await identity.handleRename(file);
 
-	const afterRename = await snapshots.getWorkingState(file);
+	const afterRename = await snapshots.getProxyWorkingState(file);
 	equal('renaming does not make the note unsaved', afterRename.kind === 'clean' && afterRename.snapshotId, v1.row.snapshotId);
 
 	// Editing the body does.
 	const noteId = await identity.resolveNoteId(file);
 	await vault.app.vault.modify(file, `---\nns-id: ${noteId}\n---\nshared body — changed\n`);
-	equal('an edit reads as unsaved', (await snapshots.getWorkingState(file)).kind, 'unsaved');
+	equal('an edit reads as unsaved', (await snapshots.getProxyWorkingState(file)).kind, 'unsaved');
 });
 
 await scenario('Working state: with identical twins, the badge follows the one restored', async () => {
@@ -263,15 +263,15 @@ await scenario('Working state: with identical twins, the badge follows the one r
 	const v2 = await snapshots.saveSnapshot(file, 'copy');
 	equal('two snapshots, same content', (await snapshots.listSnapshots(noteId)).length, 2);
 
-	const atV2 = await snapshots.getWorkingState(file);
+	const atV2 = await snapshots.getProxyWorkingState(file);
 	equal('right after saving it, the newer twin is current', atV2.kind === 'clean' && atV2.snapshotId, v2.row.snapshotId);
 
 	await restore(snapshots, file, v1.row.snapshotId);
-	const atV1 = await snapshots.getWorkingState(file);
+	const atV1 = await snapshots.getProxyWorkingState(file);
 	equal('restoring the older twin moves the badge to it', atV1.kind === 'clean' && atV1.snapshotId, v1.row.snapshotId);
 
 	await restore(snapshots, file, v2.row.snapshotId);
-	const backAtV2 = await snapshots.getWorkingState(file);
+	const backAtV2 = await snapshots.getProxyWorkingState(file);
 	equal('and back again', backAtV2.kind === 'clean' && backAtV2.snapshotId, v2.row.snapshotId);
 });
 
@@ -291,7 +291,7 @@ await scenario('Attachments: a subfolder image follows the note to its new folde
 	await snapshots.saveSnapshot(file, 'image gone');
 	vault.deleteAttachment('Projects/assets/pic.png');
 
-	const plan = await snapshots.planRestore(file, v1.row.snapshotId);
+	const plan = await snapshots.computeRestorePlan(file, v1.row.snapshotId);
 	equal('the plan reports it will be recreated', plan.attachmentsToRecreate.join(','), 'pic.png');
 
 	const restored = await restore(snapshots, file, v1.row.snapshotId);
@@ -311,7 +311,7 @@ await scenario('Attachments: a stale copy left at the old folder does not block 
 	vault.renameNote(file, 'Archive/Note.md');
 	await identity.handleRename(file);
 
-	const plan = await snapshots.planRestore(file, v1.row.snapshotId);
+	const plan = await snapshots.computeRestorePlan(file, v1.row.snapshotId);
 	equal('the plan reports it will be recreated', plan.attachmentsToRecreate.join(','), 'pic.png');
 
 	const restored = await restore(snapshots, file, v1.row.snapshotId);
@@ -586,7 +586,7 @@ await scenario('Attachments: a changed file whose bytes are in a snapshot can be
 	await vault.app.vault.modify(file, `---\nns-id: ${noteId}\n---\n![[diagram.png]]\nnote v2\n`);
 	const v2 = await snapshots.saveSnapshot(file, 'v2');
 
-	const plan = await snapshots.planRestore(file, v1.row.snapshotId);
+	const plan = await snapshots.computeRestorePlan(file, v1.row.snapshotId);
 	equal('the changed diagram is classed safe', plan.attachmentsToOverwriteAndCaptured.length, 1);
 	equal('nothing is at risk', plan.attachmentsToOverwriteAndUncaptured.length, 0);
 	equal('the changed diagram is named', plan.attachmentsToOverwriteAndCaptured[0], 'diagram.png');
@@ -614,7 +614,7 @@ await scenario('Attachments: a changed file in no snapshot forces one backup bef
 	// The chart is edited in place and never snapshotted — its current bytes exist nowhere else.
 	vault.binaryDisk.set('chart.png', bytes('chart-b-edited'));
 
-	const plan = await snapshots.planRestore(file, v1.row.snapshotId);
+	const plan = await snapshots.computeRestorePlan(file, v1.row.snapshotId);
 	equal('the edit is at risk', plan.attachmentsToOverwriteAndUncaptured.length, 1);
 	equal('and not classed safe', plan.attachmentsToOverwriteAndCaptured.length, 0);
 	equal('the at-risk file is named', plan.attachmentsToOverwriteAndUncaptured[0], 'chart.png');
@@ -636,7 +636,7 @@ await scenario('Attachments: a changed file in no snapshot forces one backup bef
 	// Self-resolving: the once-at-risk edit now lives in a snapshot, so a later restore
 	// treats it as safe rather than nagging again.
 	await restore(snapshots, file, outcome.backup!.snapshotId, { attachments: 'replace' });
-	const laterPlan = await snapshots.planRestore(file, v1.row.snapshotId);
+	const laterPlan = await snapshots.computeRestorePlan(file, v1.row.snapshotId);
 	equal('the edit is now safe', laterPlan.attachmentsToOverwriteAndCaptured.length, 1);
 	equal('nothing is at risk any more', laterPlan.attachmentsToOverwriteAndUncaptured.length, 0);
 });
@@ -654,7 +654,7 @@ await scenario('Attachments: "Snapshot & restore" still brings back a version th
 	await snapshots.saveSnapshot(file, 'v2');
 	vault.binaryDisk.set('old.png', bytes('old-orphaned-edit'));
 
-	const plan = await snapshots.planRestore(file, v1.row.snapshotId);
+	const plan = await snapshots.computeRestorePlan(file, v1.row.snapshotId);
 	equal('the target still references it, so it is at risk', plan.attachmentsToOverwriteAndUncaptured.length, 1);
 
 	// The forced backup captures the note's current (v2) content, which does not embed
@@ -682,7 +682,7 @@ await scenario('Attachments: an unsaved body and a changed attachment share one 
 	vault.binaryDisk.set('fig.png', bytes('fig-2-unsaved'));
 	equal('the body reads as unsaved', (await snapshots.getWorkingState(file)).kind, 'unsaved');
 
-	const plan = await snapshots.planRestore(file, v1.row.snapshotId);
+	const plan = await snapshots.computeRestorePlan(file, v1.row.snapshotId);
 	equal('the figure is at risk', plan.attachmentsToOverwriteAndUncaptured.length, 1);
 
 	const outcome = await backupAndRestore(snapshots, file, v1.row.snapshotId);
@@ -726,7 +726,7 @@ await scenario('Attachments: "replace" overwrites a changed file even when its c
 	vault.binaryDisk.set('pic.png', bytes('pic-2-uncaptured'));
 
 	// Text still matches v1 exactly, but the attachment has since changed in place —
-	// genuine unsaved work (see getWorkingStateWithAttachments). Passing
+	// genuine unsaved work (see getWorkingState). Passing
 	// dropUnsavedWork skips the automatic backup that would otherwise capture and
 	// recover it, so this restore's "replace" truly discards the only copy.
 	const outcome = await restore(snapshots, file, v1.row.snapshotId, { attachments: 'replace', dropUnsavedWork: true });
@@ -748,8 +748,8 @@ await scenario('Attachments: an in-place attachment change is detected as unsave
 	const v1 = await snapshots.saveSnapshot(file, 'v1');
 	vault.binaryDisk.set('pic.png', bytes('pic-2'));
 
-	equal('text alone still reads clean', (await snapshots.getWorkingState(file)).kind, 'clean');
-	const plan = await snapshots.planRestore(file, v1.row.snapshotId);
+	equal('text alone still reads clean', (await snapshots.getProxyWorkingState(file)).kind, 'clean');
+	const plan = await snapshots.computeRestorePlan(file, v1.row.snapshotId);
 	equal('the combined plan sees unsaved work', plan.workingState?.kind, 'unsaved');
 
 	const outcome = await snapshots.restoreSnapshot(file, plan, { attachments: 'replace' });
@@ -757,7 +757,7 @@ await scenario('Attachments: an in-place attachment change is detected as unsave
 	equal('the overwritten attachment is recoverable from that backup', outcome.attachmentsOverwrittenAndRecoverable.length, 1);
 });
 
-await scenario('Attachments: the combo check finds a matching twin even when it is not the one getWorkingState prefers', async () => {
+await scenario('Attachments: the combo check finds a matching twin even when it is not the one getProxyWorkingState prefers', async () => {
 	const { vault, snapshots } = harness();
 	vault.createAttachment('pic.png', bytes('pic-1'));
 	const file = vault.createNote('Twins.md', '![[pic.png]]\ntext\n');
@@ -771,17 +771,17 @@ await scenario('Attachments: the combo check finds a matching twin even when it 
 	// Revert the attachment back to what v1 — not v2 — recorded. Text still matches both.
 	vault.binaryDisk.set('pic.png', bytes('pic-1'));
 
-	const working = await snapshots.getWorkingState(file);
+	const working = await snapshots.getProxyWorkingState(file);
 	equal(
 		'text alone prefers the active twin (v2), which no longer matches the attachment',
 		working.kind === 'clean' ? working.snapshotId : null,
 		v2.row.snapshotId,
 	);
 
-	const plan = await snapshots.planRestore(file, v1.row.snapshotId);
+	const plan = await snapshots.computeRestorePlan(file, v1.row.snapshotId);
 	equal('the combo check still finds a genuine match', plan.workingState?.kind, 'clean');
 	equal(
-		'and names the twin that actually matches (v1), not the one getWorkingState preferred',
+		'and names the twin that actually matches (v1), not the one getProxyWorkingState preferred',
 		plan.workingState?.kind === 'clean' ? plan.workingState.snapshotId : null,
 		v1.row.snapshotId,
 	);

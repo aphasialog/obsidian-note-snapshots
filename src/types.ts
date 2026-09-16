@@ -105,10 +105,10 @@ export interface AttachmentRef {
  *
  * What "matches" means depends on which function produced it:
  *
- *  - `getWorkingState` checks note text only, so its `clean` is a proxy — an
+ *  - `getProxyWorkingState` checks note text only, so its `clean` is a proxy — an
  *    attachment changed in place still reads as `clean`.
- *  - `getWorkingStateWithAttachments` checks text and attachments together, so its
- *    `clean` is accurate to the full content, not just a stand-in for it.
+ *  - `getWorkingState` checks text and attachments together, so its `clean` is
+ *    accurate to the full content, not just a stand-in for it.
  */
 export type WorkingState =
 	/** The content is already in the history, as snapshot `snapshotId` (display number `n`, optional label). */

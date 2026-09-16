@@ -120,7 +120,7 @@ often by an unrelated "find orphaned files" cleanup — brings the image back to
   its current bytes still exist in some snapshot of the note — `canOverwrite` checks `snapshotRefFor`, so the
   plugin never destroys the only copy of anything. The default mode (`skip`) recreates missing attachments and
   leaves divergent ones, reporting them in `RestoreOutcome.staleAttachments`.
-- `SnapshotService.planRestore` runs the same classification read-only, ahead of the prompt, splitting divergent
+- `SnapshotService.computeRestorePlan` runs the same classification read-only, ahead of the prompt, splitting divergent
   files into `safe` (current bytes traced to a snapshot via `snapshotRefFor`) and `atRisk` (nowhere else). The
   UI (`main.decideRestore` / `promptAttachmentRestore`) turns that into one `ChoiceModal`:
   - `atRisk` non-empty (with or without an unsaved body) → **Snapshot & restore** (default) takes one
@@ -185,25 +185,25 @@ the current attachments also match.
 
 **How it works:**
 
-- `getWorkingState` stays exactly the cheap, text-only proxy it always was: hash the note body, compare against
-  every snapshot's stored hash, confirm the winner by content. It is used only for low-stakes, high-frequency
-  display — the History view's status badge (recomputed on every note edit while the view is open) and the save
-  prompt's duplicate-of hint. Nothing with real stakes reads it.
-- `getWorkingStateWithAttachments` is the accurate check. It finds *every* snapshot sharing the note's current
-  text, not just one, and returns `clean` for the first of those twins — checked-out snapshot preferred, then
-  newest — whose own recorded attachments also match the note's current attachments. That comparison is done
-  index-by-index rather than by matching names: valid only because the text on both sides is already known
-  byte-identical, which guarantees both were parsed into the same embeds in the same order. If none of the
-  same-text twins' attachments match, the state is `unsaved` even though text alone would call it clean.
-- `planRestore` calls `getWorkingStateWithAttachments`, not `getWorkingState` — restore's auto-backup (rule 4) is
-  the one decision this actually protects, so it needs the accurate answer. The two checks can disagree on
-  purpose in the attachment-changed-in-place case: the History badge can say "clean" while the same restore
-  treats the state as unsaved and takes a backup first. That is by design — the badge is a hint, the backup
-  decision is what actually protects data.
+- `getProxyWorkingState` stays exactly the cheap, text-only proxy it always was: hash the note body, compare
+  against every snapshot's stored hash, confirm the winner by content. It is used only for low-stakes,
+  high-frequency display — the History view's status badge (recomputed on every note edit while the view is
+  open) and the save prompt's duplicate-of hint. Nothing with real stakes reads it — its name is the tell.
+- `getWorkingState` is the accurate check. It finds *every* snapshot sharing the note's current text, not just
+  one, and returns `clean` for the first of those twins — checked-out snapshot preferred, then newest — whose own
+  recorded attachments also match the note's current attachments. That comparison is done index-by-index rather
+  than by matching names: valid only because the text on both sides is already known byte-identical, which
+  guarantees both were parsed into the same embeds in the same order. If none of the same-text twins' attachments
+  match, the state is `unsaved` even though text alone would call it clean.
+- `computeRestorePlan` calls `getWorkingState`, not `getProxyWorkingState` — restore's auto-backup (rule 4) is the one
+  decision this actually protects, so it needs the accurate answer. The two checks can disagree on purpose in the
+  attachment-changed-in-place case: the History badge can say "clean" while the same restore treats the state as
+  unsaved and takes a backup first. That is by design — the badge is a hint, the backup decision is what actually
+  protects data.
 
-Deliberately not done: `getWorkingState` itself was not made attachment-aware. It also runs on every note edit
-while the History view is open, and hashing every embedded attachment on that path would be needlessly expensive
-for a check nothing safety-critical depends on.
+Deliberately not done: `getProxyWorkingState` itself was not made attachment-aware. It also runs on every note
+edit while the History view is open, and hashing every embedded attachment on that path would be needlessly
+expensive for a check nothing safety-critical depends on.
 
 ## 3. Storage
 
@@ -338,7 +338,7 @@ explicit action.
   handler's generic catch, which surfaces a "Could not save a snapshot" notice. Untested.
 - **`RestorePlan` is the committed proposal, not a disposable preview.** `restoreSnapshot`/`backupAndRestoreSnapshot`
   take `plan` as their input and execute against `plan.attachmentChanges` directly rather than re-scanning the
-  vault a second time — `planRestore` is only ever called once. Re-deriving dispositions at restore time would
+  vault a second time — `computeRestorePlan` is only ever called once. Re-deriving dispositions at restore time would
   guard against neither "provably safe" (there is still a gap between any fresh read and the write that follows
   it) nor "faithful to what the user consented to" (a fresher read can show something the user never saw and
   agreed to), and within one device nothing else can mutate the vault while the confirmation modal blocks input.
