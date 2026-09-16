@@ -104,11 +104,6 @@
 	height: 0.8em;
 }
 
-.ns-row-meta {
-	font-size: var(--font-ui-smaller);
-	color: var(--text-muted);
-}
-
 .ns-row-created {
 	margin-top: 0.15rem;
 	font-size: var(--font-ui-smaller);

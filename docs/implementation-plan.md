@@ -122,12 +122,12 @@ often by an unrelated "find orphaned files" cleanup — brings the image back to
   leaves divergent ones, reporting them in `RestoreOutcome.staleAttachments`.
 - `SnapshotService.computeRestorePlan` runs the same classification read-only, ahead of the prompt, splitting divergent
   files into `safe` (current bytes traced to a snapshot via `snapshotRefFor`) and `atRisk` (nowhere else). The
-  UI (`main.decideRestore` / `promptAttachmentRestore`) turns that into one `ChoiceModal`:
+  UI (`main.decideRestore` / `promptRestoreWithAttachmentsChange`) turns that into one `ChoiceModal`:
   - `atRisk` non-empty (with or without an unsaved body) → **Snapshot & restore** (default) takes one
     backup snapshot covering the body *and* every current embed, then overwrites; **Restore text only** skips.
   - only `safe` divergence → **Replace attachments** (default) overwrites with no backup; **Restore text only**
     skips.
-  - no divergent embeds but the note body is unsaved work → `promptRestoreOverUnsaved`: **Snapshot & restore**
+  - no divergent embeds but the note body is unsaved work → `promptRestoreWithTextOnlyChange`: **Snapshot & restore**
     (default) keeps the R4 backup; **Restore only** passes `discard`, which skips the R4 backup so the unsaved
     text is dropped.
   - `Confirm before restoring = Never` forces `skip` with no prompt.

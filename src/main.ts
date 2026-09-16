@@ -4,7 +4,7 @@ import { DEFAULT_SETTINGS, normaliseSettings, shouldConfirmRestore, type NoteSna
 import { Paths } from '@/core/paths';
 import { Store } from '@/core/store';
 import { IdentityService } from '@/core/identity';
-import { SnapshotService, type AttachmentConflictMode, type RestorePlan } from '@/core/snapshots';
+import { SnapshotService, UNSAVED_LABEL, type AttachmentConflictMode, type RestorePlan } from '@/core/snapshots';
 import { TaskQueue } from '@/util/task-queue';
 import { HistoryView, VIEW_TYPE_HISTORY } from '@/ui/history-view';
 import { NoteSnapshotsSettingTab } from '@/ui/settings-tab';
@@ -206,7 +206,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 				{
 					title: 'Save snapshot',
 					cta: 'Save',
-					namePlaceholder: 'Optional name, e.g. before rewrite',
+					namePlaceholder: 'Optional name',
 					...(suggestion ? { initialName: suggestion } : {}),
 					...(duplicateOf ? { notice: `This is already saved as ${duplicateOf}.` } : {}),
 				},
@@ -251,13 +251,19 @@ export default class NoteSnapshotsPlugin extends Plugin {
 		const decision = await this.decideRestore(file, row, plan);
 		if (decision === null) return;
 
+		// The user's own naming preset, carried over so an automatic backup reads like
+		// one of their own snapshots instead of always the same generic label.
+		const suggestion = suggestedSnapshotName(this.settings, { note: file.basename });
+		const backupName = suggestion ? `${suggestion} - ${UNSAVED_LABEL}` : UNSAVED_LABEL;
+
 		try {
 			const outcome =
 				decision.kind === 'backupAndRestore'
-					? await this.snapshots.backupAndRestoreSnapshot(file, plan)
+					? await this.snapshots.backupAndRestoreSnapshot(file, plan, backupName)
 					: await this.snapshots.restoreSnapshot(file, plan, {
 							attachments: decision.mode,
 							dropUnsavedWork: decision.dropUnsavedWork,
+							backupName,
 						});
 			// backupAndRestoreSnapshot always yields outcome.backup, which describeRestoreOutcome
 			// checks before ever looking at mode — so the exact value here does not matter.
@@ -288,13 +294,12 @@ export default class NoteSnapshotsPlugin extends Plugin {
 		// present attachments alone.
 		if (policy === 'never') return { kind: 'restore', mode: 'skip', dropUnsavedWork: false };
 
-		// Case 2: a changed attachment is at stake — its own confirm & restore path,
-		// regardless of what plan.workingState says: it's checked against the *target*
-		// snapshot's own recorded attachments, not against history in general, so it
-		// fires on the ordinary case of restoring to a version whose attachments simply
-		// differ from the current ones — not only when something is actually unsaved.
+		// Case 2: whenever restoring would overwrite an attachment — a separate question
+		// from whether the current content is itself clean, so a clean workingState can
+		// still land here; promptRestoreWithAttachmentsChange handles both via its own
+		// clean/dirty branches.
 		if (plan.attachmentsToOverwriteAndCaptured.length > 0 || plan.attachmentsToOverwriteAndUncaptured.length > 0) {
-			return this.promptAttachmentRestore(row, plan);
+			return this.promptRestoreWithAttachmentsChange(row, plan);
 		}
 
 		// Case 3: nothing is at stake under this policy — restore straight away.
@@ -302,10 +307,11 @@ export default class NoteSnapshotsPlugin extends Plugin {
 			return { kind: 'restore', mode: 'skip', dropUnsavedWork: false };
 		}
 
-		// Case 4: unsaved work is at stake — let the user keep it (snapshot first) or
-		// drop it, defaulting to keeping it.
+		// Case 4: only the note text is at stake (no attachment change, per Case 2) and
+		// it's unsaved — promptRestoreWithTextOnlyChange lets the user keep it (snapshot
+		// first) or drop it, defaulting to keeping it.
 		if (plan.workingState?.kind === 'unsaved') {
-			return this.promptRestoreOverUnsaved(row);
+			return this.promptRestoreWithTextOnlyChange(row);
 		}
 
 		// Case 5: every other state — a plain yes/no confirm.
@@ -318,20 +324,27 @@ export default class NoteSnapshotsPlugin extends Plugin {
 	}
 
 	/** The multi-way prompt shown when a restore would overwrite a changed attachment. */
-	private async promptAttachmentRestore(row: SnapshotRow, plan: RestorePlan): Promise<RestoreDecision | null> {
+	private async promptRestoreWithAttachmentsChange(row: SnapshotRow, plan: RestorePlan): Promise<RestoreDecision | null> {
 		const target = formatSnapshotLabel(row.n, row.name);
-		const bodyUnsaved = plan.workingState?.kind === 'unsaved';
-		const atRisk = plan.attachmentsToOverwriteAndUncaptured.length > 0 || bodyUnsaved;
+		// A null workingState (getWorkingState threw) is treated the same as 'unsaved' —
+		// see executeRestorePlan's mightBeUnsaved for the same convention: unknown is not safe.
+		const clean = plan.workingState?.kind === 'clean' ? plan.workingState : null;
+		const atRisk = plan.attachmentsToOverwriteAndUncaptured.length > 0 || clean === null;
 		const changedAttachments = plan.attachmentChanges.filter((change) => change.disposition === 'changed');
 		const body: string[] = [];
 
 		// 1. Conclusion: is the current content already safe, or would something be lost?
-		body.push(atRisk ? 'The current content has unsaved work.' : 'The current content is already saved in another snapshot.');
+		// atRisk's OR includes clean === null, so atRisk false guarantees clean is set.
+		body.push(
+			atRisk
+				? 'The current content has unsaved work.'
+				: `The current content is identical to ${formatSnapshotLabel(clean!.n, clean!.name)}.`,
+		);
 
 		// 2. Details: exactly what restoring would overwrite, plus each attachment's path
 		// so it can be checked before deciding.
 		const overwritten: string[] = [];
-		if (bodyUnsaved) overwritten.push('the note text');
+		if (clean === null) overwritten.push('the note text');
 		overwritten.push(changedAttachments.length === 1 ? 'the following attachment:' : 'the following attachments:');
 		body.push(`This restore will overwrite ${overwritten.join(' and ')}`);
 		const list = changedAttachments.map((change) => change.presentPath!);
@@ -362,7 +375,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 	 * unsaved text as a backup snapshot first (the default), or discard it. Cancel
 	 * backs out.
 	 */
-	private async promptRestoreOverUnsaved(row: SnapshotRow): Promise<RestoreDecision | null> {
+	private async promptRestoreWithTextOnlyChange(row: SnapshotRow): Promise<RestoreDecision | null> {
 		const target = formatSnapshotLabel(row.n, row.name);
 		const index = await new Promise<number | null>((resolve) =>
 			new ChoiceModal(
@@ -486,7 +499,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 		if (!noteId) return;
 		const confirmed = await this.confirm({
 			title: 'Delete all snapshots',
-			message: `Permanently delete every stored snapshot of "${file?.basename ?? 'this note'}"? Locked snapshots are kept, and the note itself is not touched.`,
+			message: `Permanently delete all snapshots of "${file?.basename ?? 'this note'}"? Locked snapshots are kept, and the note itself is not touched.`,
 			cta: 'Delete all',
 			destructive: true,
 		});

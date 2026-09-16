@@ -2,7 +2,7 @@ import { debounce, ItemView, Menu, Notice, setIcon, TFile, type WorkspaceLeaf } 
 import type { SnapshotRow, WorkingState } from '@/types';
 import type NoteSnapshotsPlugin from '@/main';
 import { DiffModal } from '@/ui/modals';
-import { formatAbsolute, formatBytes, formatRelative, formatSnapshotLabel } from '@/ui/format';
+import { formatAbsolute, formatBytes, formatSnapshotLabel } from '@/ui/format';
 
 export const VIEW_TYPE_HISTORY = 'ns-snapshot-history';
 
@@ -119,14 +119,13 @@ export class HistoryView extends ItemView {
 			const lockIcon = title.createSpan({ cls: 'ns-row-lock-icon', attr: { 'aria-label': 'Locked' } });
 			setIcon(lockIcon, 'lock');
 		}
-		main.createDiv({
-			cls: 'ns-row-meta',
-			text: `${formatRelative(row.ts)} · ${formatBytes(row.size)}`,
-		});
 		if (row.message) {
 			main.createDiv({ cls: 'ns-row-message', text: row.message, attr: { title: row.message } });
 		}
-		main.createDiv({ cls: 'ns-row-created', text: `Created ${formatAbsolute(row.ts)}` });
+		main.createDiv({
+			cls: 'ns-row-created',
+			text: `Created ${formatAbsolute(row.ts)} · ${formatBytes(row.size)}`,
+		});
 
 		// Single click diffs against the current note; double click restores. The click
 		// action waits briefly so a double click can cancel it and take over.

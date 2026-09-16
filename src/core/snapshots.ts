@@ -310,7 +310,7 @@ export class SnapshotService {
 	async restoreSnapshot(
 		file: TFile,
 		plan: RestorePlan,
-		options: { attachments?: AttachmentConflictMode; dropUnsavedWork?: boolean } = {},
+		options: { attachments?: AttachmentConflictMode; dropUnsavedWork?: boolean; backupName?: string } = {},
 	): Promise<RestoreOutcome> {
 		const noteId = await this.identity.resolveNoteId(file);
 		if (!noteId) throw new Error('This note has no snapshot history.');
@@ -318,6 +318,7 @@ export class SnapshotService {
 			forceBackup: false,
 			dropUnsavedWork: options.dropUnsavedWork ?? false,
 			overwriteMode: options.attachments ?? 'skip',
+			backupName: options.backupName ?? UNSAVED_LABEL,
 		});
 	}
 
@@ -337,13 +338,14 @@ export class SnapshotService {
 	 *
 	 * Executes against `plan` directly — see `RestorePlan`'s own doc comment for why.
 	 */
-	async backupAndRestoreSnapshot(file: TFile, plan: RestorePlan): Promise<RestoreOutcome> {
+	async backupAndRestoreSnapshot(file: TFile, plan: RestorePlan, backupName?: string): Promise<RestoreOutcome> {
 		const noteId = await this.identity.resolveNoteId(file);
 		if (!noteId) throw new Error('This note has no snapshot history.');
 		return this.executeRestorePlan(file, noteId, plan, {
 			forceBackup: true,
 			dropUnsavedWork: false,
 			overwriteMode: 'replace',
+			backupName: backupName ?? UNSAVED_LABEL,
 		});
 	}
 
@@ -362,7 +364,7 @@ export class SnapshotService {
 		file: TFile,
 		noteId: string,
 		plan: RestorePlan,
-		decision: { forceBackup: boolean; dropUnsavedWork: boolean; overwriteMode: AttachmentConflictMode },
+		decision: { forceBackup: boolean; dropUnsavedWork: boolean; overwriteMode: AttachmentConflictMode; backupName: string },
 	): Promise<RestoreOutcome> {
 		const snapshotId = plan.target.snapshotId;
 		return this.queue.run(noteId, async () => {
@@ -386,7 +388,7 @@ export class SnapshotService {
 			const mightBeUnsaved = plan.workingState === null || plan.workingState.kind === 'unsaved';
 			if (decision.forceBackup || (mightBeUnsaved && !decision.dropUnsavedWork)) {
 				const hash = await hashNoteContent(current);
-				backupId = await this.createNewSnapshot(manifest, current, hash, file.path, UNSAVED_LABEL);
+				backupId = await this.createNewSnapshot(manifest, current, hash, file.path, decision.backupName);
 			}
 
 			await this.app.vault.modify(file, targetContent);

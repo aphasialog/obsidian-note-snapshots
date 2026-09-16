@@ -98,30 +98,6 @@ export function formatBytes(bytes: number): string {
 	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const UNITS: Array<[label: string, seconds: number]> = [
-	['year', 31_536_000],
-	['month', 2_592_000],
-	['week', 604_800],
-	['day', 86_400],
-	['hour', 3_600],
-	['minute', 60],
-];
-
-/** "just now", "5 minutes ago", "3 days ago". */
-export function formatRelative(iso: string): string {
-	const then = Date.parse(iso);
-	if (!Number.isFinite(then)) return 'unknown time';
-	const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
-	if (seconds < 45) return 'just now';
-	for (const [label, size] of UNITS) {
-		if (seconds >= size) {
-			const count = Math.floor(seconds / size);
-			return `${count} ${label}${count === 1 ? '' : 's'} ago`;
-		}
-	}
-	return 'just now';
-}
-
 export function formatAbsolute(iso: string): string {
 	const then = new Date(iso);
 	return Number.isNaN(then.getTime()) ? iso : then.toLocaleString();
