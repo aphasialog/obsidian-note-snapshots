@@ -380,11 +380,11 @@ export class SnapshotService {
 			const current = await this.readNoteContent(file);
 			let backupId: string | null = null;
 
-			// Trusts `plan.workingState` (rule R4's dedup check) rather than re-deriving it —
-			// see RestorePlan's own doc comment for why. A `null` plan.workingState (its own
-			// computation failed at plan time) is treated the same as `unsaved`: guessing
-			// wrong that way costs one harmless extra backup, whereas guessing "clean"
-			// could silently discard the only copy of genuinely unsaved work.
+			// "Confirm before restoring = Never" restores with no dialog at all, so there is
+			// no dropUnsavedWork decision from the user — this check is what still protects
+			// genuinely unsaved work there. A `null` plan.workingState (computation failed at
+			// plan time) is treated as `unsaved` — guessing wrong costs one harmless extra
+			// backup, guessing "clean" could lose work.
 			const mightBeUnsaved = plan.workingState === null || plan.workingState.kind === 'unsaved';
 			if (decision.forceBackup || (mightBeUnsaved && !decision.dropUnsavedWork)) {
 				const hash = await hashNoteContent(current);

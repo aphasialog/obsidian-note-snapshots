@@ -358,15 +358,23 @@ export default class NoteSnapshotsPlugin extends Plugin {
 
 		// Offer the choices, recommended action rightmost, and translate the pick back
 		// into a decision.
+		// The left button's label depends on which axis the two choices actually differ
+		// on: atRisk contrasts backup vs. no backup (matching promptRestoreWithTextOnlyChange's
+		// wording), while the clean branch contrasts touching attachments vs. not — nothing
+		// is backed up either way there, so "text only" is the distinction worth naming.
 		const choices = atRisk
-			? [{ label: 'Restore text only' }, { label: 'Snapshot & restore', cta: true }]
+			? [{ label: 'Restore only' }, { label: 'Snapshot & restore', cta: true }]
 			: [{ label: 'Restore text only' }, { label: 'Restore & replace attachments', cta: true }];
 
 		const index = await new Promise<number | null>((resolve) =>
 			new ChoiceModal(this.app, { title: `Restore ${target}`, body, list, choices }, resolve).open(),
 		);
 		if (index === null) return null;
-		if (index === 0) return { kind: 'restore', mode: 'skip', dropUnsavedWork: false };
+		// The body already told the user their current content has unsaved work (or is
+		// safe), so "Restore only" here means what it says: no automatic backup, same as
+		// promptRestoreWithTextOnlyChange's "Restore only". Harmless when already clean —
+		// mightBeUnsaved is false there regardless of this flag.
+		if (index === 0) return { kind: 'restore', mode: 'skip', dropUnsavedWork: true };
 		return atRisk ? { kind: 'backupAndRestore' } : { kind: 'restore', mode: 'replace', dropUnsavedWork: false };
 	}
 
@@ -387,7 +395,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 						'This restore will overwrite the note.',
 					],
 					choices: [
-						{ label: 'Discard and restore' },
+						{ label: 'Restore only' },
 						{ label: 'Snapshot & restore', cta: true },
 					],
 				},

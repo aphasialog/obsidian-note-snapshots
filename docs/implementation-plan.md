@@ -124,8 +124,9 @@ often by an unrelated "find orphaned files" cleanup — brings the image back to
   files into `safe` (current bytes traced to a snapshot via `snapshotRefFor`) and `atRisk` (nowhere else). The
   UI (`main.decideRestore` / `promptRestoreWithAttachmentsChange`) turns that into one `ChoiceModal`:
   - `atRisk` non-empty (with or without an unsaved body) → **Snapshot & restore** (default) takes one
-    backup snapshot covering the body *and* every current embed, then overwrites; **Restore text only** skips.
-  - only `safe` divergence → **Replace attachments** (default) overwrites with no backup; **Restore text only**
+    backup snapshot covering the body *and* every current embed, then overwrites; **Restore only** skips
+    the backup too, so any unsaved body is dropped.
+  - only `safe` divergence → **Replace attachments** (default) overwrites with no backup; **Restore only**
     skips.
   - no divergent embeds but the note body is unsaved work → `promptRestoreWithTextOnlyChange`: **Snapshot & restore**
     (default) keeps the R4 backup; **Restore only** passes `discard`, which skips the R4 backup so the unsaved
