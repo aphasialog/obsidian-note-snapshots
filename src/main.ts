@@ -370,12 +370,28 @@ export default class NoteSnapshotsPlugin extends Plugin {
 			new ChoiceModal(this.app, { title: `Restore ${target}`, body, list, choices }, resolve).open(),
 		);
 		if (index === null) return null;
-		// The body already told the user their current content has unsaved work (or is
-		// safe), so "Restore only" here means what it says: no automatic backup, same as
-		// promptRestoreWithTextOnlyChange's "Restore only". Harmless when already clean —
-		// mightBeUnsaved is false there regardless of this flag.
-		if (index === 0) return { kind: 'restore', mode: 'skip', dropUnsavedWork: true };
-		return atRisk ? { kind: 'backupAndRestore' } : { kind: 'restore', mode: 'replace', dropUnsavedWork: false };
+		const restoreOnly = index === 0;
+
+		// Four cases, crossing which button was pressed with whether the current
+		// content is at risk of loss. atRisk decides the axis the two buttons differ
+		// on (see the comment on `choices` above): backup vs. no backup when at risk,
+		// so both replace the attachment either way; skip vs. replace when already
+		// clean, so neither needs a backup.
+		// Case 1: "Restore only" — give up the at-risk content, no automatic backup —
+		// but still replace the attachment, since giving it up is the point of this choice.
+		if (atRisk && restoreOnly) return { kind: 'restore', mode: 'replace', dropUnsavedWork: true };
+
+		// Case 2: "Snapshot & restore" — back up the at-risk content first, then replace.
+		if (atRisk && !restoreOnly) return { kind: 'backupAndRestore' };
+
+		// Case 3: "Restore text only" — nothing at risk to back up; leave the
+		// attachment alone.
+		if (!atRisk && restoreOnly) return { kind: 'restore', mode: 'skip', dropUnsavedWork: true };
+
+		// Case 4: "Restore & replace attachments" — nothing at risk to back up, but
+		// the attachment is overwritten too. dropUnsavedWork is moot here just like
+		// Case 3 — !atRisk guarantees clean text — true for the same reason.
+		return { kind: 'restore', mode: 'replace', dropUnsavedWork: true };
 	}
 
 	/**
@@ -392,7 +408,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 					title: `Restore ${target}`,
 					body: [
 						'The current content has unsaved work.',
-						'This restore will overwrite the note.',
+						'This restore will overwrite the note text.',
 					],
 					choices: [
 						{ label: 'Restore only' },

@@ -32,7 +32,7 @@ export class NoteSnapshotsSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName('Keep history of deleted notes')
 			.setDesc(
-				'How old a deleted note’s history must be before “Clean up” will remove it, in days — so an accidental delete stays recoverable in the meantime. Set to 0 to keep every deleted note’s history indefinitely.',
+				'How old a deleted note’s history must be before “Clean up” can remove it, in days. 0 keeps it indefinitely.',
 			)
 			.addText((text) =>
 				text

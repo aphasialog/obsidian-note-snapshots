@@ -79,16 +79,14 @@ export function describeRestoreOutcome(outcome: RestoreOutcome, mode: Attachment
 	return parts.join(' ');
 }
 
-/** "Replaced … — it is still saved in an earlier snapshot." */
+/** "Replaced …" */
 function describeReplaced(replaced: string[]): string {
-	const pronoun = replaced.length === 1 ? 'it is' : 'they are';
-	return `Replaced ${formatAttachmentNames(replaced)} — ${pronoun} still saved in an earlier snapshot.`;
+	return `Replaced ${formatAttachmentNames(replaced)}.`;
 }
 
-/** "Discarded the current copy of … — it is gone for good." */
+/** "Discarded the current copy of …" */
 function describeDiscarded(discarded: string[]): string {
-	const pronoun = discarded.length === 1 ? 'it is' : 'they are';
-	return `Discarded the current copy of ${formatAttachmentNames(discarded)} — ${pronoun} gone for good.`;
+	return `Discarded the current copy of ${formatAttachmentNames(discarded)}.`;
 }
 
 // --- Byte and time formatting ---

@@ -962,7 +962,7 @@ await scenario('Restore notice: one line covers the body and every attachment to
 			}),
 			'replace',
 		),
-		'Saved the previous state as V3, then restored V1. Replaced "d.png" — it is still saved in an earlier snapshot.',
+		'Saved the previous state as V3, then restored V1. Replaced "d.png".',
 	);
 	equal(
 		'several replaced files collapse into one clause',
@@ -973,7 +973,7 @@ await scenario('Restore notice: one line covers the body and every attachment to
 			}),
 			'replace',
 		),
-		'Saved the previous state as V3, then restored V1. Replaced 4 attachments — they are still saved in an earlier snapshot.',
+		'Saved the previous state as V3, then restored V1. Replaced 4 attachments.',
 	);
 	equal(
 		'a text-only restore names what stayed behind',
@@ -983,7 +983,7 @@ await scenario('Restore notice: one line covers the body and every attachment to
 	equal(
 		'a discard names what was lost for good',
 		describeRestoreOutcome(make({ attachmentsOverwrittenAndUnrecoverable: ['e.png'] }), 'replace'),
-		'Restored V1. Discarded the current copy of "e.png" — it is gone for good.',
+		'Restored V1. Discarded the current copy of "e.png".',
 	);
 });
 
