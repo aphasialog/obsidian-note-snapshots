@@ -112,34 +112,41 @@ often by an unrelated "find orphaned files" cleanup — brings the image back to
   an image embedded unchanged across forty snapshots is written once. Each `SnapshotMeta` carries
   `attachments?: { path, hash, size? }[]` — `path` being the attachment's full vault path at capture, `size` its
   byte length (a cheap divergence pre-check on restore; absent on refs written before the field existed).
-- On restore, `applyRestoredAttachments` classifies each of the target's attachments against the vault now:
-  **missing** (recreate), **match** (leave), **divergent** (present, different bytes), or **unchecked** (present,
-  at or above the configurable large-attachment threshold, 25 MB by default — assumed unchanged rather than
-  re-hashed every restore). A size mismatch settles *divergent*
-  without hashing; only same-size files are read and hashed.
-- A **divergent** file is overwritten only when the restore mode allows it (`replace` or `snapshot-first`) *and*
-  its current bytes still exist in some snapshot of the note — `canOverwrite` checks `snapshotRefFor`, so the
-  plugin never destroys the only copy of anything. The default mode (`skip`) recreates missing attachments and
-  leaves divergent ones, reporting them in `RestoreOutcome.staleAttachments`.
-- `SnapshotService.computeRestorePlan` runs the same classification read-only, ahead of the prompt, splitting divergent
-  files into `safe` (current bytes traced to a snapshot via `snapshotRefFor`) and `atRisk` (nowhere else). The
-  UI (`main.decideRestore` / `promptRestoreWithAttachmentsChange`) turns that into one `ChoiceModal`:
-  - `atRisk` non-empty (with or without an unsaved body) → **Snapshot & restore** (default) takes one
-    backup snapshot covering the body *and* every current embed, then overwrites; **Restore only** skips
-    the backup too, so any unsaved body is dropped.
-  - only `safe` divergence → **Replace attachments** (default) overwrites with no backup; **Restore only**
-    skips.
-  - no divergent embeds but the note body is unsaved work → `promptRestoreWithTextOnlyChange`: **Snapshot & restore**
-    (default) keeps the R4 backup; **Restore only** passes `discard`, which skips the R4 backup so the unsaved
-    text is dropped.
+- On restore, `determineAttachmentDispositions` classifies each of the target's attachments against the vault
+  now: **missing** (recreate), **unchanged** (leave), **changed** (present, different bytes), or
+  **assumedUnchanged** (present, same size, but at or above the configurable large-attachment threshold —
+  `NoteSnapshotsSettings.largeAttachmentThresholdMB`, 25 MB by default, 0 disables the shortcut — so it's
+  trusted unchanged rather than re-hashed every restore). A size mismatch settles *changed* without hashing;
+  only same-size files under the threshold are read and hashed. `planAttachmentChanges` wraps this for
+  read-only callers, dropping the `unchanged` ones since they need no decision.
+- A **changed** file is overwritten only when the caller passes `'replace'` to `restoreAttachments` —
+  unconditionally, even if its current bytes exist nowhere else. Recoverability is checked afterward, purely for
+  reporting: `hasSnapshotWithAttachment` says whether *some* snapshot of this note still holds the overwritten
+  hash, sorting the outcome into `attachmentsOverwrittenAndRecoverable` vs. `attachmentsOverwrittenAndUnrecoverable`.
+  The default mode (`skip`) recreates missing attachments and leaves changed ones alone, reporting them in
+  `RestoreOutcome.attachmentsSkipped`.
+- `SnapshotService.computeRestorePlan` runs the same classification read-only, ahead of the prompt, splitting
+  `changed` entries by whether `hasSnapshotWithAttachment` finds their current bytes elsewhere:
+  `attachmentsToOverwriteAndCaptured` (safe) vs. `attachmentsToOverwriteAndUncaptured` (at risk).
+  `attachmentsAssumedUnchanged` and `attachmentsToRecreate` carry the other two dispositions, for display only.
+  The UI (`main.decideRestore` / `promptRestoreWithAttachmentsChange`) turns that into one `ChoiceModal`:
+  - anything at risk (with or without an unsaved body) → **Snapshot & restore** (default) takes one backup
+    snapshot covering the body *and* every current embed, then restores with `replace`; **Restore only** skips
+    the backup too — dropping any unsaved body — but still restores with `replace`.
+  - only safe changes → **Restore & replace attachments** (default) restores with `replace` and no backup;
+    **Restore text only** restores with `skip`.
+  - no changed embeds but the note body is unsaved work → `promptRestoreWithTextOnlyChange`: **Snapshot &
+    restore** (default) keeps the R4 backup; **Restore only** passes `dropUnsavedWork: true`, which skips the
+    backup so the unsaved text is dropped.
   - `Confirm before restoring = Never` forces `skip` with no prompt.
-- `restore(file, id, { attachments })` forces the one backup in `snapshot-first` mode even when the body already
-  matches a snapshot, so a changed embed's current bytes are captured before the overwrite. One backup covers
-  every at-risk file at once. The result feeds a single notice (`describeRestoreOutcome`) naming where replaced
-  bytes remain; `snapshotRefFor` prefers that backup, then the newest snapshot holding the hash.
+- `backupAndRestoreSnapshot` is the "Snapshot & restore" path: it always forces one backup first, covering every
+  at-risk file at once, then restores with `replace` unconditionally — even a changed attachment the backup
+  didn't capture (because the note's current content had already dropped it) is overwritten, genuinely gone for
+  good. The result feeds a single notice (`describeRestoreOutcome`) naming how many attachments were replaced,
+  not where their bytes now live.
 - This is self-resolving: the first restore past an edited-but-uncaptured attachment defaults to
   *Snapshot & restore*, which lands those bytes in a snapshot, so every later restore between those snapshots
-  treats the file as `safe` and stops prompting.
+  finds the file among `attachmentsToOverwriteAndCaptured` instead and stops prompting the at-risk choice.
 - Each blob is recreated **relative to where the note lives now**, not at its recorded absolute path
   (`relocateAttachmentPath`). If the note has moved folders since capture, an attachment that sat *at or below
   the note's own folder* (`image.png` beside it, `attachments/image.png` under it) is re-homed under the current
@@ -161,7 +168,7 @@ often by an unrelated "find orphaned files" cleanup — brings the image back to
   so a partial backup degrades instead of aborting the restore.
 
 Deliberately not done: attachments linked but not embedded are not captured; a restore never *deletes* a file
-the target does not embed, only overwrites a divergent one the user opted into; embeds are matched by exact
+the target does not embed, only overwrites a changed one the user opted into; embeds are matched by exact
 `path` between snapshots (a rename of the attachment reads as remove + add in the row delta). There is no
 persistent identity for an attachment beyond its note and content hash — `hasSnapshotWithAttachment` checks
 only whether *some* snapshot of *this* note ever recorded that hash, never which path or name it was under.

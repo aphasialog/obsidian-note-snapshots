@@ -158,14 +158,17 @@ Embedded attachments in the target snapshot are reconciled alongside the text:
   recreated from the backup.
 - **Unchanged** — the vault's attachment still matches the target snapshot's — left alone.
 - **Changed in place** — an attachment still sits at the path but differs from the target
-  snapshot's copy — the plugin asks before touching it:
-  - ✅ the current content is in snapshot history — **Replace attachments**
-    overwrites it and nothing is lost.
-  - ⚠️ the current content is not in snapshot history — **Snapshot & restore** first
-    captures the current content as one new snapshot and then restores. That backup only
-    covers the note's current content, so an attachment referenced only by an older
-    snapshot may be lost (see [Limitations](#limitations)).
-  - **Restore text only** restores only note text.
+  snapshot's copy — the plugin asks for your decision:
+  - ✅ already captured in snapshot history:
+    - **Restore & replace attachments** (default) — overwrites it.
+    - **Restore text only** — leaves it as is.
+  - ⚠️ not captured anywhere:
+    - **Snapshot & restore** (default) — backs up the current note and its attachments as a new
+      snapshot, then overwrites.
+    - **Restore only** — skips the backup and overwrites it anyway.
+
+The plugin works on a per-note basis, so take care if the attachment is shared with
+another note (see [Limitations](#limitations)).
 
 Whether a still-present attachment has changed is checked by size, then by hash if below
 the "Large attachment threshold" setting (25 MB by default), so a large attachment can be
