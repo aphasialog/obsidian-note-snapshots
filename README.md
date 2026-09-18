@@ -191,21 +191,27 @@ can miss.
 If not, every embed resolves — the attachment comes back exactly where it was. If you
 did, whether it still resolves depends on the link style:
 
-- ✅ **Wikilink** — `![[image.png]]` — always; Obsidian resolves it by filename.
+- ✅ **Wikilink** — `![[image.png]]`:
+  - Obsidian resolves it by filename, so it always works.
 - ✅ **Relative link to an attachment beside or below the note** — `![](image.png)`,
-  `![](sub/image.png)` — the attachment moves with the note.
+  `![](attachments/image.png)`:
+  - the attachment moves with the note.
 - ✅ **Absolute link into the vault folder or a fixed attachments folder** —
-  `![](/assets/image.png)` — the attachment keeps its recorded path, which is where
-  the link points. The one gap: if the note was in the vault root when the snapshot was
-  captured, every fixed path counted as under its folder too — so once the note moves,
-  the attachment relocates with it anyway, and the link breaks.
+  `![](/assets/image.png)`:
+  - the attachment keeps its recorded path, which is where the link points.
+  - the one gap: if the note was in the vault root when the snapshot was captured,
+    every fixed path counted as under its folder too — so once the note moves, the
+    attachment relocates with it anyway, and the link breaks.
 - ❌ **Anything else** — including a relative link that points outside the note's
-  folder (`![](../assets/image.png)`). Move the attachment or fix the link.
+  folder (`![](../assets/image.png)`):
+  - move the attachment or fix the link.
 
 This is because restore never rewrites embed links, so a recreated attachment only
 resolves where its link already points. The plugin decides where to place an
-attachment purely by comparing recorded paths from the snapshot: one at or below the
-note's own folder moves with the note; otherwise it stays at its recorded path.
+attachment purely by comparing recorded paths from the snapshot:
+
+- If the attachment is at or below the note's own folder, it moves with the note.
+- Otherwise, it stays at its recorded path.
 
 **2. Did you modify the attachment in place (same name, different content)?**
 
@@ -221,15 +227,12 @@ checks by size alone, takes it for unchanged, and leaves it.
   `ns-id` key in its frontmatter. Strip or clear that field — a "clear frontmatter"
   command, a format conversion, manual editing — and the note silently detaches from
   its history; the next snapshot just starts a new one, with no error.
-- **A shared attachment can surprise another note.** Recoverability during restore
-  is judged only from the note being restored, so an attachment embedded by more
-  than one note can be reconciled correctly for the target note while unexpectedly
-  changing what another note that also embeds it sees. Keep each attachment to a
-  single note if you can.
-- **Attachment recovery is best-effort.** A note moved since the snapshot, or an
-  edit to an attachment at or above the large-attachment threshold that keeps its
-  size, can leave a stale or missing attachment behind. See
-  [When attachment recovery falls short](#when-attachment-recovery-falls-short)
+- **A shared attachment can surprise another note.** Restore only considers the note
+  being restored, so overwriting a shared attachment can unexpectedly change what
+  another note embedding it sees too. Keep each attachment to a single note if you can.
+- **Attachment recovery is best-effort.** A note moved since the snapshot, or a
+  same-size edit to a large attachment, can leave a stale or missing attachment
+  behind. See [When attachment recovery falls short](#when-attachment-recovery-falls-short)
   for exactly when.
 - **On mobile, a restored picture can keep showing the old version.** The restore
   itself is correct — this is a display lag. Obsidian mobile's resource URLs don't
