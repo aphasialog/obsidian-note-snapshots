@@ -103,6 +103,8 @@ export class SnapshotService {
 		private readonly queue: TaskQueue,
 		/** Reads what the user currently sees, which may not be flushed to disk yet. */
 		private readonly readNoteContent: (file: TFile) => Promise<string>,
+		/** Live read of the user's large-attachment threshold (MB), converted to bytes. */
+		private readonly getLargeAttachmentThresholdBytes: () => number,
 	) {}
 
 	// --- Reading state ---
@@ -168,7 +170,10 @@ export class SnapshotService {
 		if (!manifest || Object.keys(manifest.snapshots).length === 0) return { kind: 'untracked' };
 
 		const content = await this.readNoteContent(file);
-		const current = await captureAttachments(this.app, this.store, manifest.noteId, file.path, content, { dryRun: true });
+		const current = await captureAttachments(this.app, this.store, manifest.noteId, file.path, content, {
+			dryRun: true,
+			largeAttachmentThresholdBytes: this.getLargeAttachmentThresholdBytes(),
+		});
 
 		const candidateIds = await this.findSnapshotIdsByNoteContent(manifest, content, await hashNoteContent(content));
 		for (const id of candidateIds) {
@@ -203,8 +208,8 @@ export class SnapshotService {
 	 * no need to match them up by name.
 	 *
 	 * Compared by size, plus hash unless the current ref's hash is the `''` "not computed"
-	 * sentinel a dry run uses for a file at or above `COMPARE_SIZE_CAP`, in which case size
-	 * alone decides — the same size-based trust extended to large files elsewhere.
+	 * sentinel a dry run uses for a file at or above the configured large-attachment
+	 * threshold, in which case size alone decides.
 	 */
 	private hasSameAttachments(current: AttachmentRef[], recorded: AttachmentRef[]): boolean {
 		if (current.length !== recorded.length) return false;
@@ -262,7 +267,7 @@ export class SnapshotService {
 		const attachmentsToOverwriteAndUncaptured: string[] = [];
 		const attachmentsAssumedUnchanged: string[] = [];
 		try {
-			attachmentChanges = await planAttachmentChanges(this.app, target, file.path);
+			attachmentChanges = await planAttachmentChanges(this.app, target, file.path, this.getLargeAttachmentThresholdBytes());
 			for (const entry of attachmentChanges) {
 				if (entry.disposition === 'missing') {
 					attachmentsToRecreate.push(entry.name);

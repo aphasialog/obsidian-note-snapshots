@@ -168,8 +168,11 @@ Embedded attachments in the target snapshot are reconciled alongside the text:
   - **Restore text only** restores only note text.
 
 Whether a still-present attachment has changed is checked by size, then by hash if below
-~25 MB, so a large attachment can be mistakenly judged unchanged (see
-[When attachment recovery falls short](#when-attachment-recovery-falls-short)).
+the "Large attachment threshold" setting (25 MB by default), so a large attachment can be
+mistakenly judged unchanged (see
+[When attachment recovery falls short](#when-attachment-recovery-falls-short)). Lower the
+threshold if that risk matters more to you than the cost of hashing large files, or set
+it to 0 to always hash regardless of size.
 
 Setting "Confirm before restoring" to `Never` skips this prompt: the restore proceeds
 immediately, still recreating any missing attachment but leaving a changed-in-place one
@@ -205,9 +208,9 @@ note's own folder moves with the note; otherwise it stays at its recorded path.
 
 Almost always fine: restore notices the change and asks before touching the attachment.
 
-The one exception is an edit to a large attachment (~25 MB or larger) that leaves it
-the exact same size — restore checks by size alone, takes it for unchanged, and leaves
-it.
+The one exception is an edit to an attachment at or above the "Large attachment
+threshold" setting (25 MB by default) that leaves it the exact same size — restore
+checks by size alone, takes it for unchanged, and leaves it.
 
 ## Limitations
 
@@ -221,8 +224,8 @@ it.
   changing what another note that also embeds it sees. Keep each attachment to a
   single note if you can.
 - **Attachment recovery is best-effort.** A note moved since the snapshot, or an
-  edit to a large (~25 MB+) attachment that keeps its size, can leave a stale or
-  missing attachment behind. See
+  edit to an attachment at or above the large-attachment threshold that keeps its
+  size, can leave a stale or missing attachment behind. See
   [When attachment recovery falls short](#when-attachment-recovery-falls-short)
   for exactly when.
 - **On mobile, a restored picture can keep showing the old version.** The restore

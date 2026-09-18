@@ -50,6 +50,7 @@ export default class NoteSnapshotsPlugin extends Plugin {
 			this.identity,
 			this.queue,
 			(file) => this.readNoteContent(file),
+			() => this.settings.largeAttachmentThresholdMB * 1024 * 1024,
 		);
 
 		this.registerView(VIEW_TYPE_HISTORY, (leaf: WorkspaceLeaf) => new HistoryView(leaf, this));

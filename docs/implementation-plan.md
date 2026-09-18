@@ -114,7 +114,8 @@ often by an unrelated "find orphaned files" cleanup — brings the image back to
   byte length (a cheap divergence pre-check on restore; absent on refs written before the field existed).
 - On restore, `applyRestoredAttachments` classifies each of the target's attachments against the vault now:
   **missing** (recreate), **match** (leave), **divergent** (present, different bytes), or **unchecked** (present,
-  over 25 MB — assumed unchanged rather than re-hashed every restore). A size mismatch settles *divergent*
+  at or above the configurable large-attachment threshold, 25 MB by default — assumed unchanged rather than
+  re-hashed every restore). A size mismatch settles *divergent*
   without hashing; only same-size files are read and hashed.
 - A **divergent** file is overwritten only when the restore mode allows it (`replace` or `snapshot-first`) *and*
   its current bytes still exist in some snapshot of the note — `canOverwrite` checks `snapshotRefFor`, so the

@@ -26,7 +26,9 @@ const MD_EMBED = /!\[[^\]]*\]\(([^)\s]+)[^)]*\)/g;
  *
  * Pass `dryRun: true` to compute the same refs without writing to the store — for
  * checking what a snapshot taken right now would look like, without taking one (see
- * `SnapshotService.computeRestorePlan`'s attachment-combo check).
+ * `SnapshotService.computeRestorePlan`'s attachment-combo check). `dryRun` is the only
+ * mode `largeAttachmentThresholdBytes` affects — a real capture always hashes, since it
+ * only runs on an explicit user save (see Case 2 below).
  */
 export async function captureAttachments(
 	app: App,
@@ -34,9 +36,10 @@ export async function captureAttachments(
 	noteId: string,
 	notePath: string,
 	content: string,
-	options?: { dryRun?: boolean },
+	options?: { dryRun?: boolean; largeAttachmentThresholdBytes?: number },
 ): Promise<AttachmentRef[]> {
 	const dryRun = options?.dryRun ?? false;
+	const largeAttachmentThresholdBytes = options?.largeAttachmentThresholdBytes ?? DEFAULT_LARGE_ATTACHMENT_THRESHOLD_BYTES;
 	const refs = new Map<string, AttachmentRef>();
 
 	for (const rawLink of extractEmbedLinks(content)) {
@@ -49,7 +52,7 @@ export async function captureAttachments(
 			if (size === null) continue;
 			// Case 1.1: too large to hash cheaply — record path + size only, with
 			// hash: '' as the "not computed" sentinel (see hasSameAttachments).
-			if (size >= COMPARE_SIZE_CAP) {
+			if (isTooLargeToHash(size, largeAttachmentThresholdBytes)) {
 				refs.set(target.path, { path: target.path, size, hash: '' });
 				continue;
 			}
@@ -170,8 +173,17 @@ function parentDir(path: string): string {
 /** The subset of a snapshot's own record that attachment reconciliation needs. */
 type RecordedSnapshot = Pick<SnapshotMetadata, 'attachments' | 'path'>;
 
-/** Attachments this size or larger are assumed unchanged rather than re-hashed on every restore. */
-const COMPARE_SIZE_CAP = 25 * 1024 * 1024;
+/**
+ * Default for `largeAttachmentThresholdBytes` below, used only where a caller (tests,
+ * or a stale call site) does not pass one. Real callers pass the user's
+ * `NoteSnapshotsSettings.largeAttachmentThresholdMB` instead — see `SnapshotService`.
+ */
+const DEFAULT_LARGE_ATTACHMENT_THRESHOLD_BYTES = 25 * 1024 * 1024;
+
+/** Whether `size` is large enough that hashing it should be skipped in favor of a size-only comparison. `thresholdBytes <= 0` disables the shortcut, so nothing ever counts as too large. */
+function isTooLargeToHash(size: number, thresholdBytes: number): boolean {
+	return thresholdBytes > 0 && size >= thresholdBytes;
+}
 
 type Disposition = 'missing' | 'unchanged' | 'changed' | 'assumedUnchanged';
 
@@ -212,8 +224,9 @@ export async function planAttachmentChanges(
 	app: App,
 	recordedSnapshot: RecordedSnapshot,
 	currentNotePath: string,
+	largeAttachmentThresholdBytes: number = DEFAULT_LARGE_ATTACHMENT_THRESHOLD_BYTES,
 ): Promise<AttachmentChange[]> {
-	const dispositions = await determineAttachmentDispositions(app, recordedSnapshot, currentNotePath);
+	const dispositions = await determineAttachmentDispositions(app, recordedSnapshot, currentNotePath, largeAttachmentThresholdBytes);
 	return dispositions
 		.filter((entry) => entry.disposition !== 'unchanged')
 		.map((entry) => ({
@@ -241,6 +254,7 @@ async function determineAttachmentDispositions(
 	app: App,
 	recordedSnapshot: RecordedSnapshot,
 	currentNotePath: string,
+	largeAttachmentThresholdBytes: number,
 ): Promise<AttachmentWithDisposition[]> {
 	const out: AttachmentWithDisposition[] = [];
 	for (const ref of recordedSnapshot.attachments ?? []) {
@@ -271,7 +285,7 @@ async function determineAttachmentDispositions(
 			continue;
 		}
 		// Case 3: same size, but too large to hash cheaply — assume unchanged.
-		if (typeof ref.size === 'number' && ref.size >= COMPARE_SIZE_CAP) {
+		if (typeof ref.size === 'number' && isTooLargeToHash(ref.size, largeAttachmentThresholdBytes)) {
 			out.push({ ref, relocatedPath, presentPath: relocatedPath, disposition: 'assumedUnchanged' });
 			continue;
 		}

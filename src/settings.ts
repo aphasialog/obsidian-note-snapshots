@@ -40,6 +40,8 @@ export interface NoteSnapshotsSettings {
 	snapshotNameSuggestion: SnapshotNameSuggestion;
 	/** Token template used when the preset is `custom`. */
 	snapshotNameTemplate: string;
+	/** Attachments at or above this size are checked for changes by size alone. 0 always checks content. */
+	largeAttachmentThresholdMB: number;
 }
 
 export const DEFAULT_SETTINGS: NoteSnapshotsSettings = {
@@ -49,6 +51,7 @@ export const DEFAULT_SETTINGS: NoteSnapshotsSettings = {
 	confirmDelete: true,
 	snapshotNameSuggestion: 'none',
 	snapshotNameTemplate: '{{date}} {{time}}',
+	largeAttachmentThresholdMB: 25,
 };
 
 const RESTORE_POLICIES: readonly RestoreConfirmPolicy[] = ['always', 'when-unsaved', 'never'];
@@ -68,6 +71,12 @@ export function normaliseSettings(raw: unknown): NoteSnapshotsSettings {
 		),
 		confirmRestore: normaliseRestorePolicy(input.confirmRestore),
 		confirmDelete: input.confirmDelete ?? DEFAULT_SETTINGS.confirmDelete,
+		largeAttachmentThresholdMB: clampInt(
+			input.largeAttachmentThresholdMB,
+			DEFAULT_SETTINGS.largeAttachmentThresholdMB,
+			0,
+			100_000,
+		),
 		snapshotNameSuggestion: oneOf(
 			NAME_SUGGESTIONS,
 			input.snapshotNameSuggestion,

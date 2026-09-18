@@ -56,7 +56,14 @@ function harness(overrides: Partial<NoteSnapshotsSettings> = {}): Harness {
 	const paths = new Paths(() => settings.storeFolder);
 	const store = new Store(vault.app, paths, queue);
 	const identity = new IdentityService(vault.app, store, queue);
-	const snapshots = new SnapshotService(vault.app, store, identity, queue, (file) => vault.app.vault.read(file));
+	const snapshots = new SnapshotService(
+		vault.app,
+		store,
+		identity,
+		queue,
+		(file) => vault.app.vault.read(file),
+		() => settings.largeAttachmentThresholdMB * 1024 * 1024,
+	);
 	return { vault, snapshots, identity, settings };
 }
 
@@ -821,6 +828,42 @@ await scenario('Attachments: garbage collected once no surviving snapshot needs 
 		'the blob is gone once its only snapshot is deleted',
 		!vault.storeFiles().some((path) => path.includes('/attachments/')),
 	);
+});
+
+/** A buffer of `size` bytes, every byte set to `fill` — for same-length, different-content attachments. */
+function bigBytes(size: number, fill: number): ArrayBuffer {
+	return Buffer.alloc(size, fill).buffer.slice(0, size) as ArrayBuffer;
+}
+
+await scenario('Large attachments: a same-size change above the threshold is assumed unchanged', async () => {
+	const oneMB = 1024 * 1024;
+	const { vault, snapshots } = harness({ largeAttachmentThresholdMB: 1 });
+	vault.createAttachment('big.bin', bigBytes(oneMB + 1, 0xaa));
+	const file = vault.createNote('Big.md', '![[big.bin]]\nv1\n');
+	const v1 = await snapshots.saveSnapshot(file, 'v1');
+
+	// Same length, different bytes — above the 1 MB threshold, so this should not be hashed.
+	vault.binaryDisk.set('big.bin', bigBytes(oneMB + 1, 0xbb));
+
+	const plan = await snapshots.computeRestorePlan(file, v1.row.snapshotId);
+	equal('the change is assumed unchanged, not flagged', plan.attachmentsAssumedUnchanged.join(','), 'big.bin');
+	equal('it is not classed safe-to-overwrite', plan.attachmentsToOverwriteAndCaptured.length, 0);
+	equal('it is not classed at-risk either', plan.attachmentsToOverwriteAndUncaptured.length, 0);
+});
+
+await scenario('Large attachments: a threshold of 0 always hashes, however large the file', async () => {
+	const oneMB = 1024 * 1024;
+	const { vault, snapshots } = harness({ largeAttachmentThresholdMB: 0 });
+	vault.createAttachment('big.bin', bigBytes(oneMB + 1, 0xaa));
+	const file = vault.createNote('Big.md', '![[big.bin]]\nv1\n');
+	const v1 = await snapshots.saveSnapshot(file, 'v1');
+
+	// Same length, different bytes — with hashing never skipped, this is still caught.
+	vault.binaryDisk.set('big.bin', bigBytes(oneMB + 1, 0xbb));
+
+	const plan = await snapshots.computeRestorePlan(file, v1.row.snapshotId);
+	equal('nothing is assumed unchanged', plan.attachmentsAssumedUnchanged.length, 0);
+	equal('the change is caught and classed at-risk', plan.attachmentsToOverwriteAndUncaptured.join(','), 'big.bin');
 });
 
 await scenario('Orphans: a deleted note keeps its history until purged', async () => {

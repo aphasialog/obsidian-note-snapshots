@@ -82,6 +82,20 @@ export class NoteSnapshotsSettingTab extends PluginSettingTab {
 
 		if (this.plugin.settings.snapshotNameSuggestion === 'custom') this.renderTemplateSetting(containerEl);
 
+		new Setting(containerEl).setName('Attachments').setHeading();
+
+		new Setting(containerEl)
+			.setName('Large attachment threshold (MB)')
+			.setDesc('Attachments at or above this size are checked for changes by size alone. Set 0 to always check content.')
+			.addText((text) =>
+				text
+					.setPlaceholder(String(DEFAULT_SETTINGS.largeAttachmentThresholdMB))
+					.setValue(String(this.plugin.settings.largeAttachmentThresholdMB))
+					.onChange(async (value) => {
+						await this.plugin.updateSettings({ largeAttachmentThresholdMB: Number.parseInt(value, 10) });
+					}),
+			);
+
 		new Setting(containerEl).setName('Confirmations').setHeading();
 
 		new Setting(containerEl)
